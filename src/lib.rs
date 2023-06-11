@@ -1,28 +1,31 @@
+#![feature(abi_thiscall)]
 use core::panic;
 use std::{
+    collections::{BTreeMap, HashMap},
     ffi::c_void,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicI32, AtomicI8, Ordering::Relaxed},
+        atomic::{AtomicI32, AtomicI8, AtomicU32, Ordering::Relaxed},
         Mutex,
     },
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 mod netcode;
 mod rollback;
 
 use ilhook::x86::{HookFlags, HookPoint, HookType};
-use libloading::Library;
+use ini::Ini;
+//use libloadng::Library;
+#[cfg(any(NO))]
 use log::info;
 use netcode::{Netcoder, NetworkPacket};
-use notify::{RecursiveMode, Watcher};
-use rollback::Rollbacker;
+//use notify::{RecursiveMode, Watcher};
+use rollback::{dump_frame, Frame, MemoryManip, Rollbacker};
 use windows::{
-    imp::WaitForSingleObject,
+    imp::{HeapFree, WaitForSingleObject},
     Win32::{
-        Foundation::HWND,
+        Foundation::{HMODULE, HWND},
         System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
-        UI::Input::KeyboardAndMouse::GetAsyncKeyState,
     },
 };
 
@@ -36,14 +39,14 @@ use windows::{
 const ISDEBUG: bool = false;
 //#[cfg(not(debug_assertions))]
 //const ISDEBUG: bool = false;
-
+#[cfg(any(NO))]
 pub fn set_up_fern() -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         // Perform allocation-free log formatting
         .format(|out, message, record| {
             out.finish(format_args!(
-                "[{} {} {}] {}",
-                humantime::format_rfc3339(std::time::SystemTime::now()),
+                "[{} {}] {}",
+                //humantime::format_rfc3339(std::time::SystemTime::now()),
                 record.level(),
                 record.target(),
                 message
@@ -59,7 +62,7 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
 }
 
 /*#[no_mangle]
-pub extern "cdecl"*/
+pub extern "cdecl"
 fn init(_: usize) -> Option<()> {
     const BPATH: &'static str = r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\fake";
 
@@ -156,13 +159,27 @@ fn init(_: usize) -> Option<()> {
     //std::mem::forget();
     Some(())
 }
-static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
+*/
 
+use winapi::um::libloaderapi::GetModuleFileNameA;
+
+static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 #[no_mangle]
-pub extern "cdecl" fn Initialize() -> bool {
+pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
+    let mut dat = [0u8; 1025];
+    unsafe {
+        GetModuleFileNameA(
+            std::mem::transmute(dllmodule),
+            &mut dat as *mut u8 as *mut i8,
+            1024,
+        )
+    };
+
+    let s = std::str::from_utf8(&dat).unwrap();
+
     //std::thread::sleep(Duration::from_millis(2000));
     //let m = init(0);
-    truer_exec();
+    truer_exec(Some(Path::new(s).to_owned()));
     true
 }
 //687040 true real input buffer manipulation
@@ -183,7 +200,7 @@ pub extern "cdecl" fn CheckVersion(a: *const [u8; 16]) -> bool {
 
 #[no_mangle]
 pub extern "cdecl" fn true_exec() {
-    truer_exec();
+    truer_exec(None);
 }
 
 static mut REAL_INPUT: Option<[bool; 10]> = None;
@@ -197,37 +214,90 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 
 static TITLE: &str = "Soku with giuroll whatever :YoumuSleep:\0";
 
-fn truer_exec() {
+unsafe extern "cdecl" fn skipbuffer(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
+
+static SOUND_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
+
+// set this mutex at the start of each frame. after each rollback you can see which sounds are left in this mutex. these sounds can and should be pasued
+static SOUND_DELET_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
+
+static mut FORCE_SOUND_SKIP: bool = false;
+
+pub fn force_sound_skip(soundid: usize) {
     unsafe {
-       /*
-       let mut whatever = PAGE_PROTECTION_FLAGS(0);
-       VirtualProtect(
-           0x89ffbe as *const c_void,
-           1,
-           PAGE_PROTECTION_FLAGS(0x40),
-           &mut whatever,
-        );
-        */
+        let forcesound = std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x401d50);
+        FORCE_SOUND_SKIP = true;
 
-        windows::Win32::UI::WindowsAndMessaging::SetWindowTextA(
-            *(0x89ff90 as *const HWND),
-            windows::core::PCSTR::from_raw(TITLE.as_ptr()),
-        )
-    };
+        forcesound(soundid as u32);
 
-    std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
+        FORCE_SOUND_SKIP = false;
+    }
+}
 
-    let (s, r) = std::sync::mpsc::channel();
+fn truer_exec(filename: Option<PathBuf>) {
     unsafe {
-        DATA_RECEIVER = Some(r);
-        DATA_SENDER = Some(s);
+        LAST_DELAY_VALUE = 1;
     }
 
+
+    #[cfg(any(NO))]
+    std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
+    unsafe {
+        let mut b = PAGE_PROTECTION_FLAGS(0);
+        VirtualProtect(
+            0x858b80 as *const c_void,
+            1,
+            PAGE_PROTECTION_FLAGS(0x40),
+            &mut b,
+        );
+
+        *(0x858b80 as *mut u8) = 0x69;
+    }
+
+    unsafe {
+        let (s, r) = std::sync::mpsc::channel();
+        DATA_RECEIVER = Some(r);
+        DATA_SENDER = Some(s);
+
+        let (s, r) = std::sync::mpsc::channel();
+        MEMORY_RECEIVER = Some(r);
+        MEMORY_SENDER = Some(s);
+    }
+
+    unsafe {
+        LAST_DELAY_VALUE = 3;
+    }
+    #[cfg(any(NO))]
     let _ = set_up_fern();
+    if let Some(mut filepath) = filename {
+        filepath.pop();
+        filepath.push("giuroll.ini");
+
+        let conf = Ini::load_from_file(filepath).unwrap();
+        let keyboard_section = conf.section(Some("Keyboard")).unwrap();
+
+        let inc = keyboard_section.get("increase_delay_key").unwrap_or(&"0");
+        let dec = keyboard_section.get("decrease_delay_key").unwrap_or(&"0");
+
+        let inc = match inc.strip_prefix("0x") {
+            Some(x) => u8::from_str_radix(x, 16).unwrap(),
+            None => inc.parse().unwrap(),
+        };
+
+        let dec = match dec.strip_prefix("0x") {
+            Some(x) => u8::from_str_radix(x, 16).unwrap(),
+            None => dec.parse().unwrap(),
+        };
+        unsafe {
+            INCREASE_DELAY_KEY = inc;
+            DECREASE_DELAY_KEY = dec;
+        }
+    }
+    #[cfg(any(NO))]
     if ISDEBUG {
         info!("true_exec ran, or did it")
     };
-
+    #[cfg(any(NO))]
     unsafe {
         if ISDEBUG {
             info!("moutain_vapor: {}", *(0x8971C0 as *const usize))
@@ -236,7 +306,7 @@ fn truer_exec() {
 
     unsafe {
         if false {
-            let funniest = 0x89ffbe;
+            //let funniest = 0x89ffbe;
 
             let mut b = PAGE_PROTECTION_FLAGS(0);
             VirtualProtect(
@@ -325,28 +395,208 @@ fn truer_exec() {
     .unwrap();
 
     let mut hook = vec![new];
+
+    //0x899d60 maybe sound manager?
+    unsafe extern "cdecl" fn handle_sound(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        let ptr = *(((*a).esi + 0x4) as *const usize);
+        #[cfg(any(NO))]
+        info!("sound: {}", ptr);
+
+        let vtable = *(ptr as *const usize);
+        #[cfg(any(NO))]
+        info!("vtable: {}", vtable);
+
+        //skip
+        //0x401db6
+
+        //start but not restart?
+        //0x401da5
+
+        //0x401d81 no idea
+        0x401d92
+    }
+
+    unsafe extern "cdecl" fn report(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) -> usize {
+        (*a).ecx = 0x89f9f8;
+        (*a).eax = *(((*a).esp + 4) as *const u32);
+        let soundid = (*a).eax as usize;
+
+        if !BATTLE_STARTED {
+            return if soundid == 0 { 0x401db7 } else { 0x401d58 };
+        }
+
+        //if FORCE_SOUND_SKIP && false {
+
+        //};
+
+        let mut w = SOUND_MUTEX.lock().unwrap();
+        let w2 = &mut *w;
+        let items = w2.entry(*SOKU_FRAMECOUNT).or_insert_with(|| Vec::new());
+
+        if soundid == 0 || items.iter().find(|x| **x == soundid).is_some() {
+            0x401db7
+        } else {
+            let old = SOUND_DELET_MUTEX.lock().unwrap();
+            items.push(soundid);
+            if let Some(vec) = old.get(&*SOKU_FRAMECOUNT) {
+                if vec.iter().find(|x| **x == soundid).is_some() {
+                    // sound already playing
+                    0x401db7
+                } else {
+                    0x401d58
+                }
+            } else {
+                0x401d58
+            }
+        }
+    }
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x401d50, // 0x482820, //0x482532, sokuroll <-
+            HookType::JmpToRet(report),
+            ilhook::x86::CallbackOption::None,
+            0,
+            HookFlags::empty(),
+        )
+        .hook()
+    }
+    .unwrap();
+    hook.push(new);
+
+    unsafe extern "cdecl" fn soundskiphook1(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        if FORCE_SOUND_SKIP {
+            // force call it, the return to end of function
+
+            // 0x401d81
+
+            let eax = *(((*a).esi + 4) as *const u32);
+
+            let ecx = *(eax as *const u32);
+
+            let fun = *((ecx + 0x48) as *const u32);
+
+            let true_fun = std::mem::transmute::<usize, extern "thiscall" fn(u32, u32 /* , u32*/)>(
+                fun as usize,
+            );
+
+            true_fun(ecx, eax /*, *(((*a).esp + 0x8)  as *const u32)*/);
+
+            0x401db6
+        } else {
+            //replicate the usual logic
+
+            if ((*(((*a).esp + 8) as *const usize)) & 1) == 0 {
+                0x401d8c
+            } else {
+                0x401d81
+            }
+        }
+    }
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x401d7a, // 0x482820, //0x482532, sokuroll <-
+            HookType::JmpToRet(soundskiphook1),
+            ilhook::x86::CallbackOption::None,
+            0,
+            HookFlags::empty(),
+        )
+        .hook()
+    }
+    .unwrap();
+    hook.push(new);
+
+    //sound
+    if false {
+        let new = unsafe {
+            ilhook::x86::Hooker::new(
+                0x401d64, // 0x482820, //0x482532, sokuroll <-
+                HookType::JmpToRet(handle_sound),
+                ilhook::x86::CallbackOption::None,
+                0,
+                HookFlags::empty(),
+            )
+            .hook()
+        }
+        .unwrap();
+        hook.push(new);
+    }
+    if false {
+        //if this returns to 1db6, it will not play the sound
+        let new = unsafe {
+            ilhook::x86::Hooker::new(
+                0x401d9f, // 0x482820, //0x482532, sokuroll <-
+                HookType::JmpToAddr(0x401db6 - 6, 0, skipbuffer),
+                ilhook::x86::CallbackOption::None,
+                00,
+                HookFlags::empty(),
+            )
+            .hook()
+        }
+        .unwrap();
+        hook.push(new);
+    }
+
     //0x82251e
-
     // on exit
-
     unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
+        *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
+        ESC = 0;
+        BATTLE_STARTED = false;
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
 
+        SOUND_MUTEX.lock().unwrap().clear();
+        SOUND_DELET_MUTEX.lock().unwrap().clear();
+
         // it cannot be used by any different thread now
         if let Some(x) = ROLLBACKER.take() {
-            //DATA_RECEIVER = Some(x.consumer);
+            for a in x.guessed {
+                a.prev_state.did_happen();
+            }
         }
 
         if let Some(x) = NETCODER.take() {
             DATA_RECEIVER = Some(x.receiver);
         }
+
+        for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
+            a.did_happen();
+        }
+
+        GIRLSTALKED = false;
     }
 
     let new = unsafe {
         ilhook::x86::Hooker::new(
             0x481960, // 0x482820, //0x482532, sokuroll <-
             HookType::JmpBack(onexit),
+            ilhook::x86::CallbackOption::None,
+            00,
+            HookFlags::empty(),
+        )
+        .hook()
+    }
+    .unwrap();
+    hook.push(new);
+
+    unsafe extern "cdecl" fn ongirlstalk(a: *mut ilhook::x86::Registers, _b: usize) {
+        GIRLSTALKED = true;
+        BATTLE_STARTED = false;
+    }
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x482960,
+            HookType::JmpBack(ongirlstalk),
             ilhook::x86::CallbackOption::None,
             00,
             HookFlags::empty(),
@@ -420,7 +670,7 @@ fn truer_exec() {
     }
 
     //prevent A pause
-    if false {
+    if true {
         let new = unsafe {
             ilhook::x86::Hooker::new(
                 0x482675,
@@ -471,7 +721,7 @@ fn truer_exec() {
         hook.push(new);
     }
 
-    unsafe extern "cdecl" fn read_pseudoraw_input(
+    unsafe extern "cdecl" fn handle_raw_input(
         a: *mut ilhook::x86::Registers,
         _b: usize,
         _c: usize,
@@ -484,16 +734,26 @@ fn truer_exec() {
         //        *(((*a).esi + 0x64) as *mut u8) = 0;
 
         //input manager;
+
         let m = (*a).ecx;
+
+        //        info!("{m}");
+
+        let somecheck = *((m + 0x4) as *const u8);
 
         let real_input = match std::mem::replace(&mut REAL_INPUT, REAL_INPUT2.take()) {
             Some(x) => x,
             None => {
-                let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>(0x40a1a0);
+                let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>(
+                    0x040a370, /*0x40a1a0*/
+                );
                 (f)(m);
                 return;
             }
         };
+
+        //let next_check = *((m + 0x4) as *const i8);
+        //info!("{next_check}");
 
         {
             let td = &mut *((m + 0x38) as *mut i32);
@@ -529,11 +789,15 @@ fn truer_exec() {
                 *m += 1 << a;
             }
         }
+
+        //additional check for some reason
+        //if (*m & (4 + 8)) == 4 + 8 {
+        //    *m = *m & ((0xFFFF - 8) - 4);
+        //}
     }
 
     if true {
         // todo : rename
-        unsafe extern "cdecl" fn skipbuffer(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
         //return: 0x42839a
         //online input loop,
@@ -556,18 +820,23 @@ fn truer_exec() {
             _b: usize,
             _c: usize,
         ) -> usize {
-            //info!("esi: {}", {(*a).esi});
-            let skip = DISABLE_SEND.load(Relaxed) != 0;
-            DISABLE_SEND.store(1, Relaxed);
-
-            //let skip = true;
-
-            if skip {
-                0x428360
+            if ESC > 60 {
+                ESC = 0;
+                0x428393
             } else {
-                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                (*a).eax = *(((*a).ecx) as *const u32);
-                0x428335
+                //info!("esi: {}", {(*a).esi});
+                let skip = DISABLE_SEND.load(Relaxed) != 0;
+                DISABLE_SEND.store(1, Relaxed);
+
+                //let skip = true;
+
+                if skip {
+                    0x428360
+                } else {
+                    (*a).ecx = *(((*a).edi + 0x8) as *const u32);
+                    (*a).eax = *(((*a).ecx) as *const u32);
+                    0x428335
+                }
             }
         }
 
@@ -594,15 +863,20 @@ fn truer_exec() {
             _b: usize,
             _c: usize,
         ) -> usize {
-            let skip = DISABLE_SEND.load(Relaxed) != 0;
-            DISABLE_SEND.store(1, Relaxed);
-            //let skip = true;
-            if skip {
-                0x428630
+            if ESC > 60 {
+                ESC = 0;
+                0x4286c3
             } else {
-                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                (*a).eax = *(((*a).ecx) as *const u32);
-                0x428605
+                let skip = DISABLE_SEND.load(Relaxed) != 0;
+                DISABLE_SEND.store(1, Relaxed);
+                //let skip = true;
+                if skip {
+                    0x428630
+                } else {
+                    (*a).ecx = *(((*a).edi + 0x8) as *const u32);
+                    (*a).eax = *(((*a).ecx) as *const u32);
+                    0x428605
+                }
             }
         }
 
@@ -664,6 +938,7 @@ fn truer_exec() {
         //info!("frame diff micro diff: {}", diff);
         let ddiff = (diff / 1000) as i32;
         let ddiff = if ddiff < 0 {
+            #[cfg(any(NO))]
             info!("frameskip {diff}");
             *target = cur + (1_000_000 / 60) as u128;
             3
@@ -699,7 +974,7 @@ fn truer_exec() {
         let new = unsafe {
             ilhook::x86::Hooker::new(
                 0x46c900, //0x46c8f7,
-                HookType::JmpToAddr(0x46c908 - 8, 0, read_pseudoraw_input),
+                HookType::JmpToAddr(0x46c908 - 8, 0, handle_raw_input),
                 //HookType::JmpBack(write_input_to_esi),
                 ilhook::x86::CallbackOption::None,
                 0,
@@ -721,6 +996,7 @@ fn truer_exec() {
             let netmanager = *(0x8986a0 as *const usize);
             if !(netmanager != 0 && *(netmanager as *const usize) != 0x858cac) {
                 ST = Some(SystemTime::now());
+                #[cfg(any(NO))]
                 info!("started ",)
             }
         }
@@ -729,12 +1005,14 @@ fn truer_exec() {
             let netmanager = *(0x8986a0 as *const usize);
             if !(netmanager != 0 && *(netmanager as *const usize) != 0x858cac) {
                 if let Some(st) = ST {
+                    #[cfg(any(NO))]
                     info!(
                         "timeelapsed: {} {:0x}",
                         st.elapsed().unwrap().as_millis(),
                         _b
                     )
                 } else {
+                    #[cfg(any(NO))]
                     info!("BEFORE");
                 }
             }
@@ -786,29 +1064,51 @@ fn truer_exec() {
         }
     }
 
-    unsafe extern "cdecl" fn log_gametype(a: *mut ilhook::x86::Registers, _b: usize) {
-        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
-    }
+    if false {
+        unsafe extern "cdecl" fn log_gametype(a: *mut ilhook::x86::Registers, _b: usize) {
+            #[cfg(any(NO))]
+            info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
+        }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x43e5fb,
-            HookType::JmpBack(log_gametype),
-            ilhook::x86::CallbackOption::None,
-            0,
-            HookFlags::empty(),
-        )
-        .hook()
+        let new = unsafe {
+            ilhook::x86::Hooker::new(
+                0x43e5fb,
+                HookType::JmpBack(log_gametype),
+                ilhook::x86::CallbackOption::None,
+                0,
+                HookFlags::empty(),
+            )
+            .hook()
+        }
+        .unwrap();
+        hook.push(new);
     }
-    .unwrap();
-    hook.push(new);
 
     *HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
+
+    unsafe {
+        /*
+        let mut whatever = PAGE_PROTECTION_FLAGS(0);
+        VirtualProtect(
+            0x89ffbe as *const c_void,
+            1,
+            PAGE_PROTECTION_FLAGS(0x40),
+            &mut whatever,
+         );
+         */
+        std::thread::sleep(Duration::from_millis(1000));
+
+        windows::Win32::UI::WindowsAndMessaging::SetWindowTextA(
+            *(0x89ff90 as *const HWND),
+            windows::core::PCSTR::from_raw(TITLE.as_ptr()),
+        )
+    };
 }
 
 #[no_mangle]
 pub extern "cdecl" fn cleanup() {
     if ISDEBUG {
+        #[cfg(any(NO))]
         info!("cleaning up the hook")
     };
 
@@ -829,12 +1129,27 @@ unsafe fn set_input_buffer(input: [bool; 10], input2: [bool; 10]) {
     REAL_INPUT = Some(input);
     REAL_INPUT2 = Some(input2);
 }
+//might not be neccesseary
+static REQUESTED_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 const SOKU_FRAMECOUNT: *mut usize = 0x8985d8 as *mut usize;
-
+use windows::Win32::System::Threading::GetCurrentThreadId;
 unsafe extern "cdecl" fn freeoverrideskip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     (*_a).eax = 1;
     let s = ((*_a).esp as usize + 2 * 4) as *mut usize;
+    return;
+    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+        unsafe {
+            MEMORY_SENDER
+                .as_ref()
+                .unwrap()
+                .send(MemoryManip::Free(*s))
+                .unwrap()
+        };
+    } else {
+        let heap = unsafe { *(0x89b404 as *const isize) };
+        unsafe { HeapFree(heap, 0, *s as *const c_void) };
+    }
     //info!("{}", *s);
     //let mut f = FRAMES.lock().unwrap();
     //
@@ -850,6 +1165,13 @@ unsafe extern "cdecl" fn freeoverrideskip(_a: *mut ilhook::x86::Registers, _b: u
 }
 
 fn store_alloc(u: usize) {
+    unsafe {
+        MEMORY_SENDER
+            .as_ref()
+            .unwrap()
+            .send(MemoryManip::Alloc(u))
+            .unwrap()
+    };
     //match FRAMES.lock().unwrap().last_mut() {
     //    Some(x) => x.allocs.push(u),
     //    None => (), //happened for sure
@@ -857,14 +1179,17 @@ fn store_alloc(u: usize) {
 }
 
 unsafe extern "cdecl" fn allochook(a: *mut ilhook::x86::Registers, _b: usize) {
-    let (s, heap) = unsafe {
-        (
-            *(((*a).esp as usize + 2 * 4) as *mut usize),
-            *(((*a).esp as usize + 1 * 4) as *mut usize),
-        )
-    };
+    //let (s, heap) = unsafe {
+    //    //(
+    //    //    *(((*a).esp as usize + 2 * 4) as *mut usize),
+    //    //    *(((*a).esp as usize + 1 * 4) as *mut usize),
+    //    //)
+    //
+    //};
 
-    store_alloc(s);
+    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+        store_alloc((*a).eax as usize);
+    }
 }
 
 unsafe extern "cdecl" fn allochook2(a: *mut ilhook::x86::Registers, _b: usize) {
@@ -884,7 +1209,7 @@ static LAST_STATE: AtomicU8 = AtomicU8::new(0x69);
 fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
     if *battle_state != 4 {
         LAST_STATE.store(*battle_state as u8, Relaxed);
-        *state_sub_count -= 1;
+        *state_sub_count = state_sub_count.wrapping_sub(1);
         *battle_state = 4;
     }
 }
@@ -944,39 +1269,73 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             .unwrap();
     }
     if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 {
-        info!("received {} {}", type1, type2);
+        //        info!("received {} {}", type1, type2);
     }
+
+    if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
+        //opponent has esced (probably) exit!
+        // let's have an incrementing value to make sure
+
+        ESC += 1;
+        if ESC > 60 {
+            BATTLE_STARTED = false;
+        }
+
+        //we should probably make sure this is not a stray packet getting to us late
+
+        //info!("received {} {} {}", type1, type2, sceneid);
+    }
+    //BATTLE_STARTED
 }
 
 unsafe extern "cdecl" fn highloop(a: *mut ilhook::x86::Registers, _b: usize) {
+    #[cfg(any(NO))]
     info!("here HL!");
 }
 
+static mut GIRLSTALKED: bool = false;
 static DISABLE_SEND: AtomicU8 = AtomicU8::new(0);
 
 //interesting adress 43E363
 
 // relevant function to "skip buffer" : 0x4558a0
-/*
+
 static LASTFR: AtomicI32 = AtomicI32::new(0);
 static ENDED: AtomicI32 = AtomicI32::new(0);
+
+static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+static GOOF: AtomicU8 = AtomicU8::new(0);
 
 unsafe fn handle_replay(
     fc2: usize,
     battle_state: &mut u32,
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
+    weird_counter: &mut u32,
 ) {
+    {
+        if let Some(x) = FRAMES.lock().unwrap().last_mut() {
+            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                match man {
+                    MemoryManip::Alloc(pos) => x.allocs.push(pos),
+                    MemoryManip::Free(pos) => x.frees.push(pos),
+                }
+            }
+        }
+    }
+
     let fc2 = *SOKU_FRAMECOUNT;
     let p = LASTFR.load(Relaxed);
 
     LASTFR.store(fc2 as i32, Relaxed);
 
     if fc2 == 0 {
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("frame 0")
         };
         unsafe {
+            #[cfg(any(NO))]
             if ISDEBUG {
                 info!("moutain_vapor_f0: {}", *(0x8971C0 as *const usize))
             }
@@ -993,63 +1352,24 @@ unsafe fn handle_replay(
 
     resume(battle_state);
     if PAUSESTATE.load(Relaxed) != 0 {
-        pause(battle_state);
+        pause(battle_state, weird_counter);
         return;
     }
 
-    if *battle_state == 4 {
-        if ISDEBUG {
-            info!("HEREEXTREMELYBAD")
-        };
-    }
-
-    if *cur_speed == *cur_speed_iter + 1 {
-        if ISDEBUG {
-            info!("end iteration")
-        };
-        ENDED.store(0, Relaxed);
-    };
-
     if *cur_speed_iter == 0 {
-        if p + 1 != fc2 as i32 && p != fc2 as i32 + 1 {
-            if ISDEBUG {
-                info!("badnextframe: {}, {}", p, fc2)
-            };
-        }
-
-        if *cur_speed != 1 {
-            if ISDEBUG {
-                info!("cur_speed {}", *cur_speed)
-            };
-            //std::thread::sleep(Duration::from_millis(20));
-        }
-
-        if ISDEBUG {
-            info!("begun iteration")
-        };
-        if ENDED.load(Relaxed) != 0 {
-            if ISDEBUG {
-                info!("here bait")
-            };
-        }
-        ENDED.store(1, Relaxed);
-
         GOOF.store(0, Relaxed);
         //"true" frame
-        let qdown = windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x51) != 0;
-        let wdown = windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x57) != 0;
+        let qdown = read_key_better(0x10);
+        //let wdown = read_key_better(0x57);
 
         if qdown {
             let target = (fc2 as u32).saturating_sub(*cur_speed) - 1;
-
+            #[cfg(any(NO))]
             if ISDEBUG {
                 info!("qdown {}", target)
             };
 
-            let mutex = match FRAMES.lock() {
-                Ok(x) => x,
-                Err(_) => return,
-            };
+            let mutex = FRAMES.lock().unwrap();
             let mut map = mutex;
             let frames = &mut *map;
             let mut last: Option<Frame> = None;
@@ -1065,10 +1385,12 @@ unsafe fn handle_replay(
                         GOOF.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
+                        #[cfg(any(NO))]
                         if ISDEBUG {
                             info!("diff: {}", diff)
                         };
 
+                        x.clone().did_happen();
                         x.restore();
 
                         //dump_frame();
@@ -1087,11 +1409,11 @@ unsafe fn handle_replay(
                         //}
 
                         *cur_speed_iter = 1;
-                        *cur_speed = 1 + diff + 3;
+                        *cur_speed = 1 + diff;
                         //                        let diff = 1;
 
                         if diff <= 0 && false {
-                            pause(battle_state);
+                            pause(battle_state, weird_counter);
                             *cur_speed_iter = *cur_speed;
                             return;
                         }
@@ -1104,20 +1426,22 @@ unsafe fn handle_replay(
                 } else {
                     //nothing can be done ?
                     if let Some(last) = last {
-                        for a in last.adresses.to_vec().into_iter() {
-                            a.restore();
-                        }
-                    }
-                    pause(battle_state);
-                    *cur_speed_iter = *cur_speed;
+                        //last.did_happen();
 
+                        last.clone().did_happen();
+                        last.restore();
+                        //did it happen?
+                    }
+                    pause(battle_state, weird_counter);
+                    *cur_speed_iter = *cur_speed;
+                    #[cfg(any(NO))]
                     if ISDEBUG {
                         info!("missing frame")
                     };
                     return;
                 }
             }
-
+            #[cfg(any(NO))]
             if ISDEBUG {
                 info!(" restore complete success")
             };
@@ -1126,24 +1450,9 @@ unsafe fn handle_replay(
 
     let fc2 = *SOKU_FRAMECOUNT;
 
-    let islastin = FRAMES
-        .lock()
-        .unwrap()
-        .last()
-        .map(|x| x.number == fc2)
-        .unwrap_or(false);
-
-    if islastin {
-        if ISDEBUG {
-            info!("lastisin")
-        };
-        return;
-        panic!("");
-    }
-
     if fc2 % 16 == 1 || GOOF.load(Relaxed) == 1 {
         let start = Instant::now();
-
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("framecount: {}", fc2)
         };
@@ -1159,16 +1468,17 @@ unsafe fn handle_replay(
 
         let duration = start.elapsed();
 
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("time elapsed on saving: {}", duration.as_nanos())
         };
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("frame successfull")
         };
     }
 }
 
- */
 fn input_to_accum(inp: &[bool; 10]) -> u16 {
     let mut inputaccum = 0u16;
     for a in 0..10 {
@@ -1179,21 +1489,60 @@ fn input_to_accum(inp: &[bool; 10]) -> u16 {
     inputaccum
 }
 
+unsafe fn read_key_better(key: u8) -> bool {
+    let raw_input_buffer = 0x8a01b8;
+
+    *((raw_input_buffer + key as u32) as *const u8) != 0
+}
+
 unsafe fn read_current_input() -> [bool; 10] {
     //return ([false; 10], 0);
-    let local_input_manager = 9013560;
+    let local_input_manager = 0x898938;
     let raw_input_buffer = 0x8a01b8;
     let mut input = [false; 10];
 
-    for a in 0..10 {
-        let key = (local_input_manager + 0x8 + a * 0x4) as *const u8;
-        //info!("here {}", key as usize);
-        let key = *key as u32;
-        //info!("here");
-        let key = *((raw_input_buffer + key) as *const u8) != 0;
-        input[a] = key;
+    let keyboard_d = *((local_input_manager + 0x4) as *const u8);
+    //if 255, then keyboard, if 0, or maybe something else, then controller
 
-        //info!("{a}: {}", key)
+    if keyboard_d == 255 {
+        for a in 0..10 {
+            let key = (local_input_manager + 0x8 + a * 0x4) as *const u8;
+            //info!("here {}", key as usize);
+            let key = *key as u32;
+            //info!("here");
+            let key = *((raw_input_buffer + key) as *const u8) != 0;
+            input[a] = key;
+
+            //info!("{a}: {}", key)
+        }
+    } else {
+        let get_controller =
+            std::mem::transmute::<usize, extern "thiscall" fn(u32, u32) -> u32>(0x40dc60);
+        let controler = get_controller(0x8a0198, keyboard_d as u32);
+
+        if controler != 0 {
+            let axis1 = *(controler as *const i32);
+            let axis2 = *((controler + 4) as *const i32);
+
+            input[2] = axis1 < -500;
+            input[3] = axis1 > 500;
+
+            input[0] = axis2 < -500;
+            input[1] = axis2 > 500;
+
+            for a in 0..6 {
+                #[cfg(any(NO))]
+                info!("{a}");
+                let key = *((local_input_manager + 0x18 + a * 0x4) as *const i32);
+                #[cfg(any(NO))]
+                info!("second {a}");
+                if key > -1 {
+                    input[a + 4] = *((key as u32 + 0x30 + controler) as *const u8) != 0;
+                }
+            }
+            //info!("controller value1: {}", );
+            //info!("controller value2: {}", ;
+        }
     }
 
     input
@@ -1205,7 +1554,19 @@ static mut NETCODER: Option<Netcoder> = None;
 static mut DATA_SENDER: Option<std::sync::mpsc::Sender<(NetworkPacket, Instant)>> = None;
 static mut DATA_RECEIVER: Option<std::sync::mpsc::Receiver<(NetworkPacket, Instant)>> = None;
 
+static mut MEMORY_SENDER: Option<std::sync::mpsc::Sender<MemoryManip>> = None;
+static mut MEMORY_RECEIVER: Option<std::sync::mpsc::Receiver<MemoryManip>> = None;
+
+// remember to increase by 1!
+static mut LAST_DELAY_VALUE: usize = 0;
+
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
+
+static mut BATTLE_STARTED: bool = false; //used for esc detection
+static mut ESC: u8 = 0; // maybe shouldn't be not atomic
+
+static mut INCREASE_DELAY_KEY: u8 = 0;
+static mut DECREASE_DELAY_KEY: u8 = 0;
 
 unsafe fn handle_online(
     fc2: usize,
@@ -1215,13 +1576,14 @@ unsafe fn handle_online(
     state_sub_count: &mut u32,
 ) {
     if fc2 == 0 {
+        BATTLE_STARTED = true;
         let m = DATA_RECEIVER.take().unwrap();
 
         let rollbacker = Rollbacker::new();
 
         ROLLBACKER = Some(rollbacker);
         let mut netcoder = Netcoder::new(m);
-        netcoder.delay = 3;
+        netcoder.delay = LAST_DELAY_VALUE;
         netcoder.max_rollback = 6;
         NETCODER = Some(netcoder);
 
@@ -1233,8 +1595,8 @@ unsafe fn handle_online(
 
     resume(battle_state);
 
-    let k_up = GetAsyncKeyState(0x55) != 0;
-    let k_down = GetAsyncKeyState(0x49) != 0;
+    let k_up = read_key_better(INCREASE_DELAY_KEY);
+    let k_down = read_key_better(DECREASE_DELAY_KEY);
 
     let last_up = LAST_DELAY_MANIP & 1 == 1;
     let last_down = LAST_DELAY_MANIP & 2 == 2;
@@ -1251,6 +1613,8 @@ unsafe fn handle_online(
             netcoder.delay -= 1;
         }
     }
+
+    LAST_DELAY_VALUE = netcoder.delay;
 
     LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
 
@@ -1276,8 +1640,10 @@ unsafe fn handle_online(
 }
 
 unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
+    #[cfg(any(NO))]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
 
+    read_current_input();
     let fc2 = *SOKU_FRAMECOUNT;
 
     let state_sub_count: &mut u32;
@@ -1301,10 +1667,41 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
     //043e610 !!!!!!!!!!
 
     //info!("gametype {}", *(0x898688 as *const usize));
+    REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
 
     match *(0x898688 as *const usize) {
-        //2 => handle_replay(fc2, battle_state, cur_speed, cur_speed_iter), //2 is replay
-        1 /*?*/ => handle_online(fc2, battle_state, cur_speed, cur_speed_iter, state_sub_count),
-        _ => ()
+        2 => handle_replay(
+            fc2,
+            battle_state,
+            cur_speed,
+            cur_speed_iter,
+            state_sub_count,
+        ), //2 is replay
+        1 => {
+            if !GIRLSTALKED {
+                // push unalocated memory onto the frames
+
+                handle_online(
+                    fc2,
+                    battle_state,
+                    cur_speed,
+                    cur_speed_iter,
+                    state_sub_count,
+                )
+            }
+        }
+        _ => (),
     }
+
+    //handle uncollected references here
+
+    //while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+    //    match man {
+    //        MemoryManip::Alloc(pos) => (), /* let this go through I guess*/
+    //        MemoryManip::Free(pos) => {
+    //            /let heap = unsafe { *(0x89b404 as *const isize) };
+    //            /unsafe { HeapFree(heap, 0, pos as *const c_void) };
+    //        }
+    //    }
+    //}
 }

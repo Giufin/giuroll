@@ -9,17 +9,26 @@ crate-type = ["cdylib"]
 
 [dependencies.windows]
 version = "0.48"
-features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Memory", "Win32_Networking_WinSock", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
+features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Memory",
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+]
 
 [dependencies]
-dashmap = "5.4.0"
-fern = "0.6.2"
-humantime = "2.1.0"
+#dashmap = "5.4.0"
+#fern = "0.6.2"
+#humantime = "2.1.0"
+
+#log = "0.4.17"
+#log-panics = { version = "2.1.0", features = ["with-backtrace"] }
+#notify = "5.1.0"
 ilhook = { path = "ilhookmod" } #"2.0.0"
-libloading = "0.8.0"
-log = "0.4.17"
-log-panics = { version = "2.1.0", features = ["with-backtrace"]}
-notify = "5.1.0"
+rust-ini = "0.19.0"
+winapi = { version = "0.3.9", features = ["libloaderapi"] }
 
 [profile.dev]
 opt-level = 3

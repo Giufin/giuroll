@@ -1,9 +1,9 @@
 use std::{
     collections::HashSet,
     sync::atomic::Ordering::Relaxed,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
-
+#[cfg(any(NO))]
 use log::info;
 use windows::Win32::Networking::WinSock::{sendto, WSAGetLastError, SOCKADDR, SOCKET};
 
@@ -143,6 +143,8 @@ impl Netcoder {
         rollbacker: &mut Rollbacker,
         current_input: [bool; 10],
     ) -> u32 {
+        
+
         let function_start_time = Instant::now();
         // self.id is lower than real framecount by 1, this is because we don't process frame 0
         while self.past_frame_starts.len() <= self.id {
@@ -165,11 +167,24 @@ impl Netcoder {
             is_p1 = netmanager != 0 && *(netmanager as *const usize) == 0x858cac;
         }
 
+        //because it looks like soku locks the netcode untill the start of a new frame, we sometimes reach this point before the netcode has finished processing it's packet, for that reason:
+        std::thread::sleep(Duration::from_millis(1));
+
         while let Ok((packet, time)) = self.receiver.try_recv() {
+            
+
+            if packet.id > self.id + 20 {
+                //this is a rare bug, that needs to be fixed, this is a temporary fix
+             //   info!("bad packet received!!");
+                continue;
+            }
+
             // time how long it took us to handlne that frame.
             // If we did not handle it in time we just send a -1000, meaning the opponent will slow down by a 1000 microseconds,
             // later on it should be worth to send information about frames ariving way too late,
             // that would make the opponent pause, or severely slow down for multiple frames
+
+            //todo, handle time data packets not ariving at all, by taking the time of arrival of the subsequent packet
 
             if packet.id + (packet.delay as usize) >= self.opponent_inputs.len() {
                 if !is_p1 {
@@ -193,6 +208,12 @@ impl Netcoder {
                         } else {
                             -((time.elapsed().as_micros()) as i128 / 1000)
                         };
+
+                        while self.past_frame_starts.len() <= packet.id {
+                            self.past_frame_starts.push(FrameTimeData::Empty);
+                        }
+
+                        self.past_frame_starts[packet.id] = FrameTimeData::RemoteFirst(time);
                         Some(r)
                     }
                     FrameTimeData::LocalFirst(x) => {
@@ -207,18 +228,26 @@ impl Netcoder {
                                 }
                             })
                             .as_micros() as i128;
+                        //info!("time passed: {}", r);
+
+                        self.past_frame_starts[packet.id] = FrameTimeData::Done(r as i32);
+
                         Some(r)
                     }
 
-                    FrameTimeData::RemoteFirst(_) => todo!("should be unreachable"),
+                    FrameTimeData::RemoteFirst(_) => {
+                        //info!("same frame received twice??");
+                        None
+                    } //todo!("should be unreachable"),
                     FrameTimeData::Done(_) => None, // this can occur when manipulating delay
                 };
-                if let Some(my_diff) = my_diff {
-                    while self.past_frame_starts.len() <= packet.id {
-                        self.past_frame_starts.push(FrameTimeData::Empty);
-                    }
-                    self.past_frame_starts[packet.id] = FrameTimeData::Done(my_diff as i32);
-                }
+
+                //if let Some(my_diff) = my_diff {
+                //    while self.past_frame_starts.len() <= packet.id {
+                //        self.past_frame_starts.push(FrameTimeData::Empty);
+                //    }
+                //    self.past_frame_starts[packet.id] = FrameTimeData::Done(my_diff as i32);
+                //}
 
                 // handle opponents timing data
                 if let Some(remote) = packet.sync {
@@ -248,6 +277,21 @@ impl Netcoder {
                     }
                     //info!("packet sync data: {:?}", x)
                 }
+
+                let weather_remote = packet.desyncdetect;
+                let weather_local = rollbacker
+                    .weathers
+                    .get(&(packet.id.saturating_sub(20)))
+                    .cloned()
+                    .unwrap_or(0);
+                if weather_remote != weather_local {
+                    //todo, add different desync indication
+                    #[cfg(any(NO))]
+                    info!(
+                        "DESYNC: local: {}, remote: {}",
+                        weather_local, weather_remote
+                    )
+                }
             }
 
             let latest = packet.id + packet.delay as usize; //last delay
@@ -275,6 +319,9 @@ impl Netcoder {
 
                 self.confirms.insert(fr);
 
+                if fr == 0 {
+                    break;
+                }
                 fr -= 1;
             }
         }
@@ -307,7 +354,11 @@ impl Netcoder {
 
         let to_be_sent = NetworkPacket {
             id: self.id,
-            desyncdetect: 0,
+            desyncdetect: rollbacker
+                .weathers
+                .get(&(self.id.saturating_sub(20)))
+                .cloned()
+                .unwrap_or(0),
             delay: self.delay as u8,
             max_rollback: self.max_rollback as u8,
             inputs: ivec,
@@ -320,6 +371,9 @@ impl Netcoder {
         unsafe { send_packet(to_be_sent.encode()) };
 
         let m = rollbacker.start();
+        if rollbacker.guessed.len() > 10 {
+            panic!("WHAT");
+        }
 
         if !self
             .confirms
@@ -369,6 +423,7 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
         data[1] = 1;
         //std::thread::sleep(Duration::from_millis(5));
         if *it == 0 {
+            #[cfg(any(NO))]
             info!("panichere");
             panic!();
         }
@@ -377,6 +432,7 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
         data[1] = 2;
 
         if *(netmanager as *const usize) != 0x858d14 {
+            #[cfg(any(NO))]
             info!("panichere2");
             panic!();
         }
@@ -386,6 +442,8 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
     let rse = sendto(*(socket as *const SOCKET), &data, 0, to, data.len() as i32);
 
     if rse == -1 {
+        //to do, change error handling for sockets 
+        #[cfg(any(NO))]
         info!("socket err: {:?}", WSAGetLastError());
     }
 }

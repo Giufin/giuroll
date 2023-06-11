@@ -1,9 +1,20 @@
-use std::{collections::HashSet, ffi::c_void, sync::Mutex, arch::asm};
-
+use std::{
+    arch::asm,
+    collections::{BTreeMap, HashMap, HashSet},
+    ffi::c_void,
+};
+#[cfg(any(NO))]
 use log::info;
-use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
-use crate::{set_input_buffer, ISDEBUG, SOKU_FRAMECOUNT};
+use windows::{
+    imp::HeapFree,
+    Win32::System::Memory::{HeapHandle, HeapValidate},
+};
+
+use crate::{
+    force_sound_skip, set_input_buffer, ISDEBUG, MEMORY_RECEIVER, SOKU_FRAMECOUNT,
+    SOUND_DELET_MUTEX, SOUND_MUTEX,
+};
 
 type RInput = [bool; 10];
 
@@ -17,7 +28,10 @@ const CHARSIZEDATA_B: [usize; 20] = [
     940, /* 0, 940, */
 ];
 
-
+pub enum MemoryManip {
+    Alloc(usize),
+    Free(usize),
+}
 pub struct EnemyInputHolder {
     pub i: Vec<Option<RInput>>,
 }
@@ -49,7 +63,25 @@ impl EnemyInputHolder {
         match self.i.get(frame) {
             Some(Some(x)) => Ok(*x),
             None if frame == 0 => Err([false; 10]),
-            Some(None) | None => Err(self.get(frame - 1)),
+            Some(None) | None => {
+                /*
+                               // here we need to guess what the input will be. to prevent guessing wrong on mashes we should be very conservative about our guesses
+                               let mut w = (1..3)
+                                   .map(|x| self.get(frame.saturating_sub(x)))
+                                   .reduce(|x, y| {
+                                       (0..10)
+                                           .map(|idx| x[idx] & y[idx])
+                                           .collect::<Vec<_>>()
+                                           .try_into()
+                                           .unwrap()
+                                   })
+                                   .unwrap();
+
+                               w[0..4].copy_from_slice(&self.get(frame - 1)[0..4]);
+                */
+
+                Err(self.get(frame - 1))
+            }
         }
     }
 }
@@ -66,9 +98,18 @@ pub struct Rollbacker {
     current: usize,
     rolling_back: bool,
 
+    pub future_sound: HashMap<usize, usize>,
+    // first element is the sound, second is the frame it occured at, whenever a frame comes true we can delete all future sounds with that value
+
+    // stores all the sounds that happened in "guessed" frames. Will also need to be topped up *after* last frame.
+    // every frame we can store this as "past_sounds", and if any sound in future sounds did not appear in past_sounds, we can then cancell that sound by force calling 0x401d50
+    // which we hook, and set a static to ignore the sound.
+
+    //also, while rolling back, we should not play sounds that already did appear in past_sounds (and instead remove them, so we can see what is)
     pub enemy_inputs: EnemyInputHolder,
     pub self_inputs: Vec<RInput>,
 
+    pub weathers: HashMap<usize, u8>,
     //pub consumer: std::sync::mpsc::Receiver<(usize, RInput)>,
 }
 
@@ -83,6 +124,8 @@ impl Rollbacker {
             rolling_back: false,
             enemy_inputs: EnemyInputHolder::new(),
             self_inputs: Vec::new(),
+            weathers: HashMap::new(),
+            future_sound: HashMap::new(),
             //consumer,
         }
     }
@@ -90,6 +133,7 @@ impl Rollbacker {
     pub fn start(&mut self) -> usize {
         //this should only be called on the 0th iteration.
         self.current = unsafe { *SOKU_FRAMECOUNT }; //following
+        let mut newsound = std::mem::replace(&mut *SOUND_MUTEX.lock().unwrap(), BTreeMap::new());
 
         //while let Ok((pos, input)) = self.consumer.try_recv() {
         //    //info!("NTC received {:?}", (pos, input));
@@ -104,10 +148,19 @@ impl Rollbacker {
                 .unwrap_or(false))
         {
             let m = self.guessed.remove(0);
+
+            //newsound.remove(&m.prev_state.number);
+
+            self.weathers
+                .insert(m.prev_state.number, m.prev_state.weather_sync_check);
             m.prev_state.did_happen();
         }
 
+        //info!("{:?}", newsound.remove(&(self.current - self.guessed.len())));
+
+        *SOUND_DELET_MUTEX.lock().unwrap() = newsound;
         if self.guessed.len() > 0 {
+
             //info!(
             //    "{:?} {:?}",
             //    self.enemy_inputs
@@ -138,7 +191,72 @@ impl Rollbacker {
     }
 
     pub fn step(&mut self, iteration_number: usize) -> Option<()> {
+        unsafe {
+            if self.guessed.len() > 0 && false {
+                //disabled for now because caused crashes
+                let last = if iteration_number == 0 {
+                    self.guessed.len() - 1
+                } else {
+                    iteration_number - 1
+                };
+
+                while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                    match man {
+                        MemoryManip::Alloc(pos) => self.guessed[last].prev_state.allocs.push(pos), /* */
+                        MemoryManip::Free(pos) => self.guessed[last].prev_state.frees.push(pos),
+                    }
+                }
+            }
+        }
+
         if self.guessed.len() == iteration_number {
+            //last iteration for this frame, handle sound here
+            {
+                let mut to_be_skipped = vec![];
+                {
+                    let new_sounds = &mut *SOUND_MUTEX.lock().unwrap();
+                    let old_sounds = &mut *SOUND_DELET_MUTEX.lock().unwrap();
+
+                    let new_col = new_sounds
+                        .values()
+                        .map(|x| x.into_iter())
+                        .flatten()
+                        .collect::<HashSet<_>>();
+
+                    //info!("new: {:?} old: {:?}", new_sounds, old_sounds);
+
+                    for idx in (self.current).saturating_sub(5)..(self.current) {
+                        if !new_sounds.contains_key(&idx) {
+                            //info!("key: {idx} not found");
+                            continue;
+                        }
+                        if let Some(x) = old_sounds.get(&idx) {
+                            for a in x {
+                                if !new_col.contains(a) {
+                                    to_be_skipped.push(*a);
+                                    //info!("{} shouldn't happen", a);
+                                }
+                            }
+                        }
+                    }
+
+                    std::mem::swap(old_sounds, new_sounds);
+
+                    //let old_col = old_sounds
+                    //    .values()
+                    //    .map(|x| x.into_iter())
+                    //    .flatten()
+                    //    .collect::<HashSet<_>>();
+                    //
+                    //old_col.difference(&new_col).map(|x| **x).collect()
+                };
+                for a in to_be_skipped {
+                    force_sound_skip(a);
+                }
+
+                //*old_sounds = std::mem::replace(new_sounds, BTreeMap::new());
+            }
+
             let si = self.self_inputs[self.current];
             let ei = self.enemy_inputs.get(self.current);
             Self::apply_input(si, ei);
@@ -192,7 +310,7 @@ impl RollFrame {
     }
 }
 static mut FPST: [u8; 108] = [0u8; 108];
-unsafe fn dump_frame() -> Frame {
+pub unsafe fn dump_frame() -> Frame {
     let w = unsafe {
         //let b = 3;
         asm!(
@@ -210,6 +328,7 @@ unsafe fn dump_frame() -> Frame {
     //0x895ec
     /*
      */
+    #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x895ec")
     };
@@ -257,7 +376,7 @@ unsafe fn dump_frame() -> Frame {
                 .into_iter(),
         );
     }
-
+    #[cfg(any(NO))]
     //0x8985e0
     if ISDEBUG {
         info!("0x8985e0")
@@ -301,8 +420,8 @@ unsafe fn dump_frame() -> Frame {
             .to_vec()
             .into_iter(),
     );
-    /*
-     */
+
+    #[cfg(any(NO))]
     //0x8985f0
     if ISDEBUG {
         info!("0x8985f0")
@@ -330,6 +449,7 @@ unsafe fn dump_frame() -> Frame {
     //info!("len {}", effect_linked_list.len());
     m.extend(effect_linked_list.into_iter());
 
+    #[cfg(any(NO))]
     //0x8985e8
     if ISDEBUG {
         info!("0x8985e8")
@@ -346,6 +466,7 @@ unsafe fn dump_frame() -> Frame {
 
         if read_from == 0 {
             if n[2] != 0 || n[3] != 0 || n[4] != 0 {
+                #[cfg(any(NO))]
                 if ISDEBUG {
                     info!("read_from is zero {:?}", n)
                 };
@@ -391,10 +512,12 @@ unsafe fn dump_frame() -> Frame {
     read_weird(&mut m, first + 0x18c, 0xc);
     read_weird(&mut m, first + 0x1c0, 0xc);
 
+    #[cfg(any(NO))]
     //0x8985e4
     if ISDEBUG {
         info!("0x8985e4")
     };
+
     let ptr1 = read_addr(0x8985e4, 0x4);
     let first = get_ptr(&ptr1.content[0..4], 0);
     m.push(read_addr(first, 0x908));
@@ -439,12 +562,15 @@ unsafe fn dump_frame() -> Frame {
         let w = read_vec(first + 0x9c);
         if w.start != 0 {
             m.push(w.read_underlying());
+            #[cfg(any(NO))]
             info!("battle+x9c wasn't 0");
         }
         let w = read_vec(first + 0xac);
 
         if w.start != 0 {
             m.push(w.read_underlying());
+            #[cfg(any(NO))]
+            //seems to have never triggered, same as the one above
             info!("battle+xac wasn't 0");
         }
     }
@@ -464,6 +590,7 @@ unsafe fn dump_frame() -> Frame {
 
     //0x8985dc
     if ISDEBUG {
+        #[cfg(any(NO))]
         info!("0x8985dc")
     };
 
@@ -476,6 +603,7 @@ unsafe fn dump_frame() -> Frame {
     //todo 180f0
 
     //0x8986a0
+    #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x8986a0")
     };
@@ -483,9 +611,9 @@ unsafe fn dump_frame() -> Frame {
     //it wants a mutex from here on out, which is sus
 
     let ptr1 = read_addr(0x8986a0, 0x4);
-    //if ISDEBUG { info!("ptr1: {}", get_ptr(&ptr1.content[0..4], 0)) };
+    ////if ISDEBUG { info!("ptr1: {}", get_ptr(&ptr1.content[0..4], 0)) };
     let first = get_ptr(&ptr1.content[0..4], 0);
-
+    //
     if first != 0 {
         m.push(read_addr(first + 0xf8, 0x68));
         m.push(read_addr(first + 0x174, 0x68));
@@ -493,6 +621,7 @@ unsafe fn dump_frame() -> Frame {
 
     //weird from here on out
     //read some deque with first
+    #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x8985e4")
     };
@@ -539,7 +668,8 @@ unsafe fn dump_frame() -> Frame {
                     if p3 != 0 {
                         let s = read_heap(p3);
                         if s > 4000 {
-                            info!("bullet data TOO BIG!! {}", s)
+                            #[cfg(any(NO))]
+                            info!("bullet data too big! {}", s)
                         } else {
                             m.push(read_addr(p3, s));
                         }
@@ -675,6 +805,8 @@ unsafe fn dump_frame() -> Frame {
     funky(p3, 0, &mut m);
 
     funky(p3, 1, &mut m);
+
+    #[cfg(any(NO))]
     if ISDEBUG {
         info!("bullets done");
     }
@@ -693,9 +825,11 @@ unsafe fn dump_frame() -> Frame {
         let sc2 = read_deque(sc1 + 0x3c);
         let z = sc2.obj_s as i32;
 
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("weird deque done");
         }
+
         if z != 0 {
             let size = sc2.size as i32;
             let ptr = sc2.data as i32;
@@ -761,10 +895,8 @@ unsafe fn dump_frame() -> Frame {
         fp: w,
         frees: vec![],
         allocs: vec![],
-        //charge_buffers: (
-        //    PREVIOUS_1.lock().unwrap().take(),
-        //    PREVIOUS_2.lock().unwrap().take(),
-        //),
+        weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
+            & 0xFF) as u8,
     }
 }
 
@@ -779,7 +911,7 @@ fn read_heap(pos: usize) -> usize {
 }
 
 #[derive(Debug, Clone)]
-struct ReadAddr {
+pub struct ReadAddr {
     pub pos: usize,
     pub content: Box<[u8]>,
 }
@@ -792,7 +924,7 @@ impl ReadAddr {
             .collect()
     }
 
-    fn restore(self) {
+    pub fn restore(self) {
         if self.pos == 0 || self.content.len() == 0 {
             return; //
         }
@@ -853,6 +985,7 @@ struct LL3Holder {
 impl LL3Holder {
     fn read_underlying(&self) -> Box<[LL4]> {
         if self.ll4 == 0 {
+            #[cfg(any(NO))]
             info!("ll4 is 0 ,painc");
             panic!("ll4 is 0");
         }
@@ -867,6 +1000,7 @@ impl LL3Holder {
             let last = b.last().unwrap();
             let next = last.next;
             if next == 0 {
+                #[cfg(any(NO))]
                 info!(
                     "next was equal to zero, pos {}, out of {}",
                     a,
@@ -1004,6 +1138,7 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
         panic!("size too big {}", size);
     }
     if pos == 0 || size == 0 {
+        #[cfg(any(NO))]
         if ISDEBUG {
             info!("unchecked 0 :(")
         };
@@ -1012,12 +1147,25 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
             content: Box::new([]),
         };
     }
+    #[cfg(any(NO))]
     if false {
-        info!("here2 {} {}", pos, unsafe { *(0x89b404 as *const usize) });
-        let m = read_heap(pos);
-        info!("here1 {}", pos);
-        if m != size && m != usize::MAX && m != 940 && m != 944 {
-            info!("values unequal, {} {}", m, size);
+        //info!("here2 {} {}", pos, unsafe { *(0x89b404 as *const usize) });
+
+        unsafe {
+            if HeapValidate(
+                *(0x89b404 as *const HeapHandle),
+                windows::Win32::System::Memory::HEAP_FLAGS(0),
+                Some(pos as *const c_void),
+            )
+            .into()
+            {
+                let m = read_heap(pos);
+                //info!("here1 {}", pos);
+                if m != size && m != usize::MAX && m != 940 && m != 944 {
+                    
+                    info!("values unequal, {} {}", m, size);
+                }
+            }
         }
     }
     let ptr = pos as *const u8;
@@ -1087,18 +1235,21 @@ fn get_ptr(from: &[u8], offset: usize) -> usize {
 
 #[derive(Clone, Debug)]
 pub struct Frame {
-    number: usize,
-    adresses: Box<[ReadAddr]>,
-    fp: [u8; 108],
-    frees: Vec<usize>,
-    allocs: Vec<usize>,
+    pub number: usize,
+    pub adresses: Box<[ReadAddr]>,
+    pub fp: [u8; 108],
+    pub frees: Vec<usize>,
+    pub allocs: Vec<usize>,
+
+    pub weather_sync_check: u8,
     //charge_buffers: (Option<[i32; 6]>, Option<[i32; 6]>),
 }
 
 impl Frame {
-    fn never_happened(self) {
+    pub fn never_happened(self) {
         for a in self.allocs {
             let heap = unsafe { *(0x89b404 as *const isize) };
+            #[cfg(any(NO))]
             if ISDEBUG {
                 info!("alloc: {}", a)
             };
@@ -1106,7 +1257,7 @@ impl Frame {
         }
     }
 
-    fn did_happen(self) {
+    pub fn did_happen(self) {
         for a in self.frees {
             let heap = unsafe { *(0x89b404 as *const isize) };
             unsafe { HeapFree(heap, 0, a as *const c_void) };
@@ -1134,7 +1285,7 @@ impl Frame {
         format!("reduntant bytes: {}", counter)
     }
 
-    fn restore(self) {
+    pub fn restore(self) {
         unsafe {
             FPST = self.fp;
             asm!(
