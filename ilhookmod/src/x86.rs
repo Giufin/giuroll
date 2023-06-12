@@ -1,7 +1,3 @@
-use bitflags::bitflags;
-use iced_x86::{
-    BlockEncoder, BlockEncoderOptions, Decoder, DecoderOptions, Instruction, InstructionBlock,
-};
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::slice;
 
@@ -11,11 +7,6 @@ use core::ffi::c_void;
 use windows_sys::Win32::Foundation::GetLastError;
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::VirtualProtect;
-
-#[cfg(unix)]
-use libc::{__errno_location, c_void, mprotect, sysconf};
-
-use crate::err::HookError;
 
 const MAX_INST_LEN: usize = 15;
 const JMP_INST_SIZE: usize = 5;
@@ -144,21 +135,13 @@ pub enum CallbackOption {
     None,
 }
 
-bitflags! {
-    /// Hook flags
-    pub struct HookFlags:u32 {
-        /// If set, will not modify the memory protection of the destination address
-        const NOT_MODIFY_MEMORY_PROTECT = 0x1;
-    }
-}
-
 /// The entry struct in ilhook.
 /// Please read the main doc to view usage.
 pub struct Hooker {
     addr: usize,
     hook_type: HookType,
     thread_cb: CallbackOption,
-    flags: HookFlags,
+
     user_data: usize,
 }
 
@@ -169,7 +152,6 @@ pub struct HookPoint {
     stub_prot: u32,
     origin: Vec<u8>,
     thread_cb: CallbackOption,
-    flags: HookFlags,
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -194,7 +176,6 @@ impl Hooker {
         hook_type: HookType,
         thread_cb: CallbackOption,
         user_data: usize,
-        flags: HookFlags,
     ) -> Self {
         env_lock();
         Self {
@@ -202,7 +183,6 @@ impl Hooker {
             hook_type,
             thread_cb,
             user_data,
-            flags,
         }
     }
 
@@ -218,114 +198,65 @@ impl Hooker {
     /// 4. Set `NOT_MODIFY_MEMORY_PROTECT` where it should not be set.
     /// 5. hook or unhook from 2 or more threads at the same time without `HookFlags::NOT_MODIFY_MEMORY_PROTECT`. Because of memory protection colliding.
     /// 6. Other unpredictable errors.
-    pub unsafe fn hook(self) -> Result<HookPoint, HookError> {
-        let (moving_insts, origin) = get_moving_insts(self.addr)?;
-        let stub = generate_stub(&self, moving_insts, origin.len() as u8, self.user_data)?;
-        let stub_prot = modify_mem_protect(stub.as_ptr() as usize, stub.len())?;
-        if !self.flags.contains(HookFlags::NOT_MODIFY_MEMORY_PROTECT) {
-            let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE)?;
-            let ret = modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize);
-            recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
-            ret?;
-        } else {
-            modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize)?;
-        }
-        Ok(HookPoint {
+    pub unsafe fn hook(self) -> HookPoint {
+        let origin = get_moving_insts(self.addr);
+        let stub = generate_stub(&self, origin, origin.len() as u8, self.user_data);
+        let stub_prot = modify_mem_protect(stub.as_ptr() as usize, stub.len());
+
+        let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE);
+        let ret = modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize);
+        recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
+
+        HookPoint {
             addr: self.addr,
             stub,
             stub_prot,
             origin,
             thread_cb: self.thread_cb,
-            flags: self.flags,
-        })
-    }
-/// I made this monster
-/// # Safety
-/// 
-/// None
-    pub unsafe fn hook_bad(self) -> Result<HookPoint, HookError> {
-        let (moving_insts, origin) = get_moving_insts(self.addr)?;
-        let stub = generate_stub(&self, moving_insts, origin.len() as u8, self.user_data)?;
-        let stub_prot = modify_mem_protect(stub.as_ptr() as usize, stub.len())?;
-        if !self.flags.contains(HookFlags::NOT_MODIFY_MEMORY_PROTECT) {
-            let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE)?;
-            let ret = modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize);
-            recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
-            ret?;
-        } else {
-            modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize)?;
         }
-        Ok(HookPoint {
-            addr: self.addr,
-            stub,
-            stub_prot,
-            origin,
-            thread_cb: self.thread_cb,
-            flags: self.flags,
-        })
     }
 }
 
 impl HookPoint {
     /// Consume self and unhook the address.
-    pub unsafe fn unhook(self) -> Result<(), HookError> {
+    pub unsafe fn unhook(self) {
         self.unhook_by_ref()
     }
 
-    fn unhook_by_ref(&self) -> Result<(), HookError> {
-        let ret: Result<(), HookError>;
-        if !self.flags.contains(HookFlags::NOT_MODIFY_MEMORY_PROTECT) {
-            let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE)?;
-            ret = recover_jmp_with_thread_cb(self);
-            recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
-        } else {
-            ret = recover_jmp_with_thread_cb(self)
-        }
+    fn unhook_by_ref(&self) {
+        let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE);
+
+        recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
+
         recover_mem_protect(self.stub.as_ptr() as usize, self.stub.len(), self.stub_prot);
-        ret
     }
 }
 
 // When the HookPoint drops, it should unhook automatically.
 impl Drop for HookPoint {
     fn drop(&mut self) {
-        self.unhook_by_ref().unwrap_or_default();
+        self.unhook_by_ref();
     }
 }
 
-fn get_moving_insts(addr: usize) -> Result<(Vec<Instruction>, Vec<u8>), HookError> {
+fn get_moving_insts(addr: usize) -> Vec<u8> {
     let code_slice =
         unsafe { slice::from_raw_parts(addr as *const u8, MAX_INST_LEN * JMP_INST_SIZE) };
-    let mut decoder = Decoder::new(32, code_slice, DecoderOptions::NONE);
-    decoder.set_ip(addr as u64);
+    //let mut decoder = Decoder::new(32, code_slice, DecoderOptions::NONE);
+    //decoder.set_ip(addr as u64);
 
-    let mut total_bytes = 0;
-    let mut ori_insts: Vec<Instruction> = vec![];
-    for inst in &mut decoder {
-        if inst.is_invalid() {
-            return Err(HookError::Disassemble);
-        }
-        ori_insts.push(inst);
-        total_bytes += inst.len();
-        if total_bytes >= JMP_INST_SIZE {
-            break;
-        }
-    }
-
-    Ok((ori_insts, code_slice[0..decoder.position()].into()))
+    //code_slice[0..decoder.position()].into()
+    code_slice.into()
 }
 
 #[cfg(windows)]
-pub fn modify_mem_protect(addr: usize, len: usize) -> Result<u32, HookError> {
+pub fn modify_mem_protect(addr: usize, len: usize) -> u32 {
     let mut old_prot: u32 = 0;
     let old_prot_ptr = std::ptr::addr_of_mut!(old_prot);
     // PAGE_EXECUTE_READWRITE = 0x40
     let ret = unsafe { VirtualProtect(addr as *const c_void, len, 0x40, old_prot_ptr) };
-    if ret == 0 {
-        Err(HookError::MemoryProtect(unsafe { GetLastError() }))
-    } else {
-        Ok(old_prot)
-    }
+
+    old_prot
 }
 
 #[cfg(unix)]
@@ -371,24 +302,19 @@ fn recover_mem_protect(addr: usize, _: usize, old: u32) {
     };
 }
 
-fn write_relative_off<T: Write + Seek>(
-    buf: &mut T,
-    base_addr: u32,
-    dst_addr: u32,
-) -> Result<(), HookError> {
+fn write_relative_off<T: Write + Seek>(buf: &mut T, base_addr: u32, dst_addr: u32) {
     let dst_addr = dst_addr as i32;
     let cur_pos = buf.stream_position().unwrap() as i32;
     let call_off = dst_addr - (base_addr as i32 + cur_pos + 4);
-    buf.write(&call_off.to_le_bytes())?;
-    Ok(())
+    buf.write(&call_off.to_le_bytes()).unwrap();
 }
 
-fn move_code_to_addr(ori_insts: &Vec<Instruction>, dest_addr: u32) -> Result<Vec<u8>, HookError> {
-    let block = InstructionBlock::new(ori_insts, u64::from(dest_addr));
-    let encoded = BlockEncoder::encode(32, block, BlockEncoderOptions::NONE)
-        .map_err(|_| HookError::MoveCode)?;
-    Ok(encoded.code_buffer)
-}
+//fn move_code_to_addr(ori_insts: &Vec<u8>, dest_addr: u32) -> Vec<u8> {
+//    let block = InstructionBlock::new(ori_insts, u64::from(dest_addr));
+//    let encoded = BlockEncoder::encode(32, block, BlockEncoderOptions::NONE)
+//        .map_err(|_| HookError::MoveCode)?;
+//    Ok(encoded.code_buffer)
+//}
 
 fn write_ori_func_addr<T: Write + Seek>(buf: &mut T, ori_func_addr_off: u32, ori_func_off: u32) {
     let pos = buf.stream_position().unwrap();
@@ -401,173 +327,177 @@ fn write_ori_func_addr<T: Write + Seek>(buf: &mut T, ori_func_addr_off: u32, ori
 fn generate_jmp_back_stub<T: Write + Seek>(
     buf: &mut T,
     stub_base_addr: u32,
-    moving_code: &Vec<Instruction>,
+    moving_code: &Vec<u8>,
     ori_addr: u32,
     cb: JmpBackRoutine,
     ori_len: u8,
     user_data: usize,
-) -> Result<(), HookError> {
+) {
     // push user_data
-    buf.write(&[0x68])?;
-    buf.write(&user_data.to_le_bytes())?;
+    buf.write(&[0x68]).unwrap();
+    buf.write(&user_data.to_le_bytes()).unwrap();
 
     // push ebp (Registers)
     // call XXXX (dest addr)
-    buf.write(&[0x55, 0xe8])?;
-    write_relative_off(buf, stub_base_addr, cb as u32)?;
+    buf.write(&[0x55, 0xe8]).unwrap();
+    write_relative_off(buf, stub_base_addr, cb as u32);
 
     // add esp, 0x8
-    buf.write(&[0x83, 0xc4, 0x08])?;
+    buf.write(&[0x83, 0xc4, 0x08]).unwrap();
     // popfd
     // popad
-    buf.write(&[0x9d, 0x61])?;
+    buf.write(&[0x9d, 0x61]).unwrap();
 
     let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos)?)?;
+    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
+        .unwrap();
     // jmp back
-    buf.write(&[0xe9])?;
+    buf.write(&[0xe9]).unwrap();
+
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
 fn generate_retn_stub<T: Write + Seek>(
     buf: &mut T,
     stub_base_addr: u32,
-    moving_code: &Vec<Instruction>,
+    moving_code: &Vec<u8>,
     ori_addr: u32,
     retn_val: u16,
     cb: RetnRoutine,
     ori_len: u8,
     user_data: usize,
-) -> Result<(), HookError> {
+) {
     // push user_data
-    buf.write(&[0x68])?;
-    buf.write(&user_data.to_le_bytes())?;
+    buf.write(&[0x68]).unwrap();
+    buf.write(&user_data.to_le_bytes()).unwrap();
 
     // push XXXX (original function addr)
     // push ebp (Registers)
     // call XXXX (dest addr)
     let ori_func_addr_off = buf.stream_position().unwrap() + 1;
-    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8])?;
-    write_relative_off(buf, stub_base_addr, cb as u32)?;
+    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8]).unwrap();
+    write_relative_off(buf, stub_base_addr, cb as u32);
 
     // add esp, 0xc
-    buf.write(&[0x83, 0xc4, 0x0c])?;
+    buf.write(&[0x83, 0xc4, 0x0c]).unwrap();
     // mov [esp+20h], eax
-    buf.write(&[0x89, 0x44, 0x24, 0x20])?;
+    buf.write(&[0x89, 0x44, 0x24, 0x20]).unwrap();
     // popfd
     // popad
-    buf.write(&[0x9d, 0x61])?;
+    buf.write(&[0x9d, 0x61]).unwrap();
     if retn_val == 0 {
         // retn
-        buf.write(&[0xc3])?;
+        buf.write(&[0xc3]).unwrap();
     } else {
         // retn XX
-        buf.write(&[0xc2])?;
-        buf.write(&retn_val.to_le_bytes())?;
+        buf.write(&[0xc2]).unwrap();
+        buf.write(&retn_val.to_le_bytes()).unwrap();
     }
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
     let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos)?)?;
+    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
+        .unwrap();
 
     // jmp ori_addr
-    buf.write(&[0xe9])?;
+    buf.write(&[0xe9]);
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
 fn generate_jmp_addr_stub<T: Write + Seek>(
     buf: &mut T,
     stub_base_addr: u32,
-    moving_code: &Vec<Instruction>,
+    moving_code: &Vec<u8>,
     ori_addr: u32,
     dest_addr: u32,
     cb: JmpToAddrRoutine,
     ori_len: u8,
     user_data: usize,
     popstack: u8,
-) -> Result<(), HookError> {
+) {
     // push user_data
-    buf.write(&[0x68])?;
-    buf.write(&user_data.to_le_bytes())?;
+    buf.write(&[0x68]).unwrap();
+    buf.write(&user_data.to_le_bytes()).unwrap();
 
     // push XXXX (original function addr)
     // push ebp (Registers)
     // call XXXX (dest addr)
     let ori_func_addr_off = buf.stream_position().unwrap() + 1;
-    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8])?;
-    write_relative_off(buf, stub_base_addr, cb as u32)?;
+    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8]).unwrap();
+    write_relative_off(buf, stub_base_addr, cb as u32);
 
     // add esp, 0xc
-    buf.write(&[0x83, 0xc4, 0x0c])?;
+    buf.write(&[0x83, 0xc4, 0x0c]).unwrap();
     // popfd
     // popad
-    buf.write(&[0x9d, 0x61])?;
+    buf.write(&[0x9d, 0x61]).unwrap();
 
     //pop stack
-    buf.write(&[0x83, 0xC4, popstack]);
+    buf.write(&[0x83, 0xC4, popstack]).unwrap();
     // jmp back
-    buf.write(&[0xe9])?;
-    write_relative_off(buf, stub_base_addr, dest_addr + u32::from(ori_len))?;
+    buf.write(&[0xe9]).unwrap();
+    write_relative_off(buf, stub_base_addr, dest_addr + u32::from(ori_len));
 
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
     let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos)?)?;
+    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos));
 
     // jmp ori_addr
-    buf.write(&[0xe9])?;
+    buf.write(&[0xe9]).unwrap();
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
 fn generate_jmp_ret_stub<T: Write + Seek>(
     buf: &mut T,
     stub_base_addr: u32,
-    moving_code: &Vec<Instruction>,
+    moving_code: &Vec<u8>,
     ori_addr: u32,
     cb: JmpToRetRoutine,
     ori_len: u8,
     user_data: usize,
-) -> Result<(), HookError> {
+) {
     // push user_data
-    buf.write(&[0x68])?;
-    buf.write(&user_data.to_le_bytes())?;
+    buf.write(&[0x68]).unwrap();
+    buf.write(&user_data.to_le_bytes()).unwrap();
 
     // push XXXX (original function addr)
     // push ebp (Registers)
     // call XXXX (dest addr)
     let ori_func_addr_off = buf.stream_position().unwrap() + 1;
-    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8])?;
-    write_relative_off(buf, stub_base_addr, cb as u32)?;
+    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8]).unwrap();
+    write_relative_off(buf, stub_base_addr, cb as u32);
 
     // add esp, 0xc
-    buf.write(&[0x83, 0xc4, 0x0c])?;
+    buf.write(&[0x83, 0xc4, 0x0c]).unwrap();
     // mov [esp-4], eax
-    buf.write(&[0x89, 0x44, 0x24, 0xfc])?;
+    buf.write(&[0x89, 0x44, 0x24, 0xfc]).unwrap();
     // popfd
     // popad
-    buf.write(&[0x9d, 0x61])?;
+    buf.write(&[0x9d, 0x61]).unwrap();
     // jmp dword ptr [esp-0x28]
-    buf.write(&[0xff, 0x64, 0x24, 0xd8])?;
+    buf.write(&[0xff, 0x64, 0x24, 0xd8]).unwrap();
 
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
     let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos)?)?;
+    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
+        .unwrap();
 
     // jmp ori_addr
-    buf.write(&[0xe9])?;
+    buf.write(&[0xe9]).unwrap();
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
 fn generate_stub(
     hooker: &Hooker,
-    moving_code: Vec<Instruction>,
+    moving_code: Vec<u8>,
     ori_len: u8,
     user_data: usize,
-) -> Result<Box<[u8; 100]>, HookError> {
+) -> Box<[u8; 100]> {
     let mut raw_buffer = Box::new([0u8; 100]);
     let stub_addr = raw_buffer.as_ptr() as u32;
     let mut buf = Cursor::new(&mut raw_buffer[..]);
@@ -575,7 +505,7 @@ fn generate_stub(
     // pushad
     // pushfd
     // mov ebp, esp
-    buf.write(&[0x60, 0x9c, 0x8b, 0xec])?;
+    buf.write(&[0x60, 0x9c, 0x8b, 0xec]).unwrap();
 
     match hooker.hook_type {
         HookType::JmpBack(cb) => generate_jmp_back_stub(
@@ -617,21 +547,20 @@ fn generate_stub(
             ori_len,
             user_data,
         ),
-    }?;
+    };
 
-    Ok(raw_buffer)
+    raw_buffer
 }
 
-fn modify_jmp(dest_addr: usize, stub_addr: usize) -> Result<(), HookError> {
+fn modify_jmp(dest_addr: usize, stub_addr: usize) {
     let buf = unsafe { slice::from_raw_parts_mut(dest_addr as *mut u8, JMP_INST_SIZE) };
     // jmp stub_addr
     buf[0] = 0xe9;
     let rel_off = stub_addr as i32 - (dest_addr as i32 + 5);
     buf[1..5].copy_from_slice(&rel_off.to_le_bytes());
-    Ok(())
 }
 
-fn modify_jmp_with_thread_cb(hook: &Hooker, stub_addr: usize) -> Result<(), HookError> {
+fn modify_jmp_with_thread_cb(hook: &Hooker, stub_addr: usize) {
     //if let CallbackOption::Some(cbs) = &hook.thread_cb {
     //    if !cbs.pre() {
     //        return Err(HookError::PreHook);
@@ -650,7 +579,7 @@ fn recover_jmp(dest_addr: usize, origin: &[u8]) {
     buf.copy_from_slice(origin);
 }
 
-fn recover_jmp_with_thread_cb(hook: &HookPoint) -> Result<(), HookError> {
+fn recover_jmp_with_thread_cb(hook: &HookPoint) {
     //if let CallbackOption::Some(cbs) = &hook.thread_cb {
     //    if !cbs.pre() {
     //        return Err(HookError::PreHook);
@@ -660,7 +589,6 @@ fn recover_jmp_with_thread_cb(hook: &HookPoint) -> Result<(), HookError> {
     //} else {
     recover_jmp(hook.addr, &hook.origin);
     //}
-    Ok(())
 }
 
 #[cfg(target_arch = "x86")]

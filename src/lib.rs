@@ -14,10 +14,11 @@ mod netcode;
 mod rollback;
 
 use ilhook::x86::{HookFlags, HookPoint, HookType};
-use ini::Ini;
+
 //use libloadng::Library;
 #[cfg(any(NO))]
 use log::info;
+use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
 //use notify::{RecursiveMode, Watcher};
 use rollback::{dump_frame, Frame, MemoryManip, Rollbacker};
@@ -25,7 +26,10 @@ use windows::{
     imp::{HeapFree, WaitForSingleObject},
     Win32::{
         Foundation::{HMODULE, HWND},
-        System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+        System::{
+            Console::AllocConsole,
+            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+        },
     },
 };
 
@@ -239,6 +243,11 @@ fn truer_exec(filename: Option<PathBuf>) {
         LAST_DELAY_VALUE = 1;
     }
 
+    unsafe {
+        AllocConsole();
+    }
+
+    println!("here");
 
     #[cfg(any(NO))]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
@@ -273,24 +282,35 @@ fn truer_exec(filename: Option<PathBuf>) {
         filepath.pop();
         filepath.push("giuroll.ini");
 
-        let conf = Ini::load_from_file(filepath).unwrap();
-        let keyboard_section = conf.section(Some("Keyboard")).unwrap();
+        let conf = mininip::parse::parse_file(filepath).unwrap();
+        //let keyboard_section = conf.section(Some("Keyboard")).unwrap();
 
-        let inc = keyboard_section.get("increase_delay_key").unwrap_or(&"0");
-        let dec = keyboard_section.get("decrease_delay_key").unwrap_or(&"0");
+        let inc = conf
+            .get(&Identifier::new(
+                Some("Keyboard".to_string()),
+                "increase_delay_key".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(0);
 
-        let inc = match inc.strip_prefix("0x") {
-            Some(x) => u8::from_str_radix(x, 16).unwrap(),
-            None => inc.parse().unwrap(),
-        };
+        let dec = conf
+            .get(&Identifier::new(
+                Some("Keyboard".to_string()),
+                "decrease_delay_key".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(0);
 
-        let dec = match dec.strip_prefix("0x") {
-            Some(x) => u8::from_str_radix(x, 16).unwrap(),
-            None => dec.parse().unwrap(),
-        };
+        
         unsafe {
-            INCREASE_DELAY_KEY = inc;
-            DECREASE_DELAY_KEY = dec;
+            INCREASE_DELAY_KEY = inc as u8;
+            DECREASE_DELAY_KEY = dec as u8;
         }
     }
     #[cfg(any(NO))]
@@ -579,6 +599,35 @@ fn truer_exec(filename: Option<PathBuf>) {
         ilhook::x86::Hooker::new(
             0x481960, // 0x482820, //0x482532, sokuroll <-
             HookType::JmpBack(onexit),
+            ilhook::x86::CallbackOption::None,
+            00,
+            HookFlags::empty(),
+        )
+        .hook()
+    }
+    .unwrap();
+    hook.push(new);
+
+    //0x4545a7 jump to here if dword ptr [EDI + 0x6e0] less or equal  than ESI
+
+    unsafe extern "cdecl" fn maybe_spectator(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        //println!("here!");
+        if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 10 {
+            //println!("rock bottom");
+            0x4545a7
+        } else {
+            0x45457f
+        }
+    }
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x454577, // 0x482820, //0x482532, sokuroll <-
+            HookType::JmpToRet(maybe_spectator),
             ilhook::x86::CallbackOption::None,
             00,
             HookFlags::empty(),
@@ -985,7 +1034,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         .unwrap();
         hook.push(new);
     }
-
+/*
     if false {
         static mut ST: Option<SystemTime> = None;
         unsafe { ST = Some(SystemTime::now()) };
@@ -1064,44 +1113,47 @@ fn truer_exec(filename: Option<PathBuf>) {
         }
     }
 
-    if false {
-        unsafe extern "cdecl" fn log_gametype(a: *mut ilhook::x86::Registers, _b: usize) {
-            #[cfg(any(NO))]
-            info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
-        }
 
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x43e5fb,
-                HookType::JmpBack(log_gametype),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
+ */
+    //if false {
+    //    unsafe extern "cdecl" fn log_gametype(a: *mut ilhook::x86::Registers, _b: usize) {
+    //        #[cfg(any(NO))]
+    //        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
+    //    }
+
+    //    let new = unsafe {
+    //        ilhook::x86::Hooker::new(
+    //            0x43e5fb,
+    //            HookType::JmpBack(log_gametype),
+    //            ilhook::x86::CallbackOption::None,
+    //            0,
+    //            HookFlags::empty(),
+    //        )
+    //        .hook()
+    //    }
+    //    .unwrap();
+    //    hook.push(new);
+    //}
 
     *HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
 
     unsafe {
-        /*
-        let mut whatever = PAGE_PROTECTION_FLAGS(0);
-        VirtualProtect(
-            0x89ffbe as *const c_void,
-            1,
-            PAGE_PROTECTION_FLAGS(0x40),
-            &mut whatever,
-         );
-         */
-        std::thread::sleep(Duration::from_millis(1000));
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(3000));
 
-        windows::Win32::UI::WindowsAndMessaging::SetWindowTextA(
-            *(0x89ff90 as *const HWND),
-            windows::core::PCSTR::from_raw(TITLE.as_ptr()),
-        )
+            let mut whatever = PAGE_PROTECTION_FLAGS(0);
+            VirtualProtect(
+                0x89ffbe as *const c_void,
+                1,
+                PAGE_PROTECTION_FLAGS(0x40),
+                &mut whatever,
+            );
+
+            windows::Win32::UI::WindowsAndMessaging::SetWindowTextA(
+                *(0x89ff90 as *const HWND),
+                windows::core::PCSTR::from_raw(TITLE.as_ptr()),
+            )
+        })
     };
 }
 
