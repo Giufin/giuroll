@@ -138,8 +138,6 @@ As rust's test run parrallelly, it may crash if not specify `--test-threads=1`.
 
 #![warn(missing_docs)]
 
-mod err;
-
 /// The x86 hooker
 pub mod x86;
 

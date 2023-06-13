@@ -1267,12 +1267,12 @@ static mut DATA_RECEIVER: Option<std::sync::mpsc::Receiver<(NetworkPacket, Insta
 static mut MEMORY_SENDER: Option<std::sync::mpsc::Sender<MemoryManip>> = None;
 static mut MEMORY_RECEIVER: Option<std::sync::mpsc::Receiver<MemoryManip>> = None;
 
-// remember to increase by 1!
+// this value is offset by 1, because we start sending frames at frame 1, meaning that input for frame n + 1 is sent in packet n
 static mut LAST_DELAY_VALUE: usize = 0;
 
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
-static mut BATTLE_STARTED: bool = false; //used for esc detection
+static mut BATTLE_STARTED: bool = false; 
 static mut ESC: u8 = 0; // maybe shouldn't be not atomic
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
@@ -1380,8 +1380,8 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
         1 => {
             // 1 is netplay and v player
             // todo: detect v player
+
             if !GIRLSTALKED {
-                // push unalocated memory onto the frames
                 handle_online(
                     framecount,
                     battle_state,

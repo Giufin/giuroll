@@ -6,6 +6,8 @@ Is a network rollback mod for 東方非想天則 / Touhou 12.3 Hisoutensoku, whi
 
 Currently this is a very early version and contains a lot of issues, but will still significantly improve the netplay experience for many connections.  
 
+This repository also contains a stripped down version version of the crate [illhook-rs](https://github.com/regomne/ilhook-rs), all rights remain with their respective authors.
+
 ## Current Issues  
 
 - Game crashes upon attempting to load Vs Player mode
@@ -48,5 +50,3 @@ ChèvreDeFeu, TStar, Barcode, Rouen, Klempfer, LunaTriv, Aquatic and BIG BREWED 
 Slavfox - for various help with reverse engineering and open source
 
 Fireseal - for making the original rollback mod for hisoutensoku
-
-
