@@ -3,12 +3,10 @@ use std::slice;
 
 #[cfg(windows)]
 use core::ffi::c_void;
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::GetLastError;
+
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::VirtualProtect;
 
-const MAX_INST_LEN: usize = 15;
 const JMP_INST_SIZE: usize = 5;
 
 /// This is the routine used in a `jmp-back hook`, which means the EIP will jump back to the
@@ -127,20 +125,11 @@ pub trait ThreadCallback {
     fn post(&self);
 }
 
-/// Option for thread callback
-pub enum CallbackOption {
-    /// Valid callback
-    //Some(Box<dyn ThreadCallback>),
-    /// No callback
-    None,
-}
-
 /// The entry struct in ilhook.
 /// Please read the main doc to view usage.
 pub struct Hooker {
     addr: usize,
     hook_type: HookType,
-    thread_cb: CallbackOption,
 
     user_data: usize,
 }
@@ -150,8 +139,6 @@ pub struct HookPoint {
     addr: usize,
     stub: Box<[u8; 100]>,
     stub_prot: u32,
-    origin: Vec<u8>,
-    thread_cb: CallbackOption,
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -171,17 +158,12 @@ impl Hooker {
     /// * `thread_cb` - The callbacks before and after hooking.
     /// * `flags` - Hook flags
     #[must_use]
-    pub fn new(
-        addr: usize,
-        hook_type: HookType,
-        thread_cb: CallbackOption,
-        user_data: usize,
-    ) -> Self {
+    pub fn new(addr: usize, hook_type: HookType, user_data: usize) -> Self {
         env_lock();
         Self {
             addr,
             hook_type,
-            thread_cb,
+
             user_data,
         }
     }
@@ -198,21 +180,20 @@ impl Hooker {
     /// 4. Set `NOT_MODIFY_MEMORY_PROTECT` where it should not be set.
     /// 5. hook or unhook from 2 or more threads at the same time without `HookFlags::NOT_MODIFY_MEMORY_PROTECT`. Because of memory protection colliding.
     /// 6. Other unpredictable errors.
-    pub unsafe fn hook(self) -> HookPoint {
-        let origin = get_moving_insts(self.addr);
-        let stub = generate_stub(&self, origin, origin.len() as u8, self.user_data);
+    pub unsafe fn hook(self, len: usize) -> HookPoint {
+        let origin = get_moving_insts(self.addr, len);
+        let ol = origin.len() as u8;
+        let stub = generate_stub(&self, origin.clone(), ol, self.user_data);
         let stub_prot = modify_mem_protect(stub.as_ptr() as usize, stub.len());
 
         let old_prot = modify_mem_protect(self.addr, JMP_INST_SIZE);
-        let ret = modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize);
+        modify_jmp_with_thread_cb(&self, stub.as_ptr() as usize);
         recover_mem_protect(self.addr, JMP_INST_SIZE, old_prot);
 
         HookPoint {
             addr: self.addr,
             stub,
             stub_prot,
-            origin,
-            thread_cb: self.thread_cb,
         }
     }
 }
@@ -239,9 +220,8 @@ impl Drop for HookPoint {
     }
 }
 
-fn get_moving_insts(addr: usize) -> Vec<u8> {
-    let code_slice =
-        unsafe { slice::from_raw_parts(addr as *const u8, MAX_INST_LEN * JMP_INST_SIZE) };
+fn get_moving_insts(addr: usize, len: usize) -> Vec<u8> {
+    let code_slice = unsafe { slice::from_raw_parts(addr as *const u8, len) };
     //let mut decoder = Decoder::new(32, code_slice, DecoderOptions::NONE);
     //decoder.set_ip(addr as u64);
 
@@ -348,9 +328,7 @@ fn generate_jmp_back_stub<T: Write + Seek>(
     // popad
     buf.write(&[0x9d, 0x61]).unwrap();
 
-    let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
-        .unwrap();
+    buf.write(&moving_code).unwrap();
     // jmp back
     buf.write(&[0xe9]).unwrap();
 
@@ -396,12 +374,10 @@ fn generate_retn_stub<T: Write + Seek>(
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
-    let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
-        .unwrap();
+    buf.write(&moving_code).unwrap();
 
     // jmp ori_addr
-    buf.write(&[0xe9]);
+    buf.write(&[0xe9]).unwrap();
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
@@ -437,13 +413,16 @@ fn generate_jmp_addr_stub<T: Write + Seek>(
     buf.write(&[0x83, 0xC4, popstack]).unwrap();
     // jmp back
     buf.write(&[0xe9]).unwrap();
-    write_relative_off(buf, stub_base_addr, dest_addr + u32::from(ori_len));
+    write_relative_off(
+        buf,
+        stub_base_addr,
+        dest_addr, /* + u32::from(ori_len) */
+    );
 
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
-    let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos));
+    buf.write(&moving_code).unwrap();
 
     // jmp ori_addr
     buf.write(&[0xe9]).unwrap();
@@ -483,9 +462,7 @@ fn generate_jmp_ret_stub<T: Write + Seek>(
     let ori_func_off = buf.stream_position().unwrap() as u32;
     write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
 
-    let cur_pos = buf.stream_position().unwrap() as u32;
-    buf.write(&move_code_to_addr(moving_code, stub_base_addr + cur_pos))
-        .unwrap();
+    buf.write(&moving_code).unwrap();
 
     // jmp ori_addr
     buf.write(&[0xe9]).unwrap();
@@ -561,34 +538,7 @@ fn modify_jmp(dest_addr: usize, stub_addr: usize) {
 }
 
 fn modify_jmp_with_thread_cb(hook: &Hooker, stub_addr: usize) {
-    //if let CallbackOption::Some(cbs) = &hook.thread_cb {
-    //    if !cbs.pre() {
-    //        return Err(HookError::PreHook);
-    //    }
-    //    let ret = modify_jmp(hook.addr, stub_addr);
-    //    cbs.post();
-    //    ret
-    //} else {
     modify_jmp(hook.addr, stub_addr)
-    //}
-}
-
-fn recover_jmp(dest_addr: usize, origin: &[u8]) {
-    let buf = unsafe { slice::from_raw_parts_mut(dest_addr as *mut u8, origin.len()) };
-    // jmp stub_addr
-    buf.copy_from_slice(origin);
-}
-
-fn recover_jmp_with_thread_cb(hook: &HookPoint) {
-    //if let CallbackOption::Some(cbs) = &hook.thread_cb {
-    //    if !cbs.pre() {
-    //        return Err(HookError::PreHook);
-    //    }
-    //    recover_jmp(hook.addr, &hook.origin);
-    //    cbs.post();
-    //} else {
-    recover_jmp(hook.addr, &hook.origin);
-    //}
 }
 
 #[cfg(target_arch = "x86")]

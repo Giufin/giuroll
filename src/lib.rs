@@ -1,11 +1,12 @@
 #![feature(abi_thiscall)]
 use core::panic;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
+    os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicI32, AtomicI8, AtomicU32, Ordering::Relaxed},
+        atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
     },
     time::{Duration, Instant, SystemTime},
@@ -13,7 +14,7 @@ use std::{
 mod netcode;
 mod rollback;
 
-use ilhook::x86::{HookFlags, HookPoint, HookType};
+use ilhook::x86::{HookPoint, HookType};
 
 //use libloadng::Library;
 #[cfg(any(NO))]
@@ -23,21 +24,18 @@ use netcode::{Netcoder, NetworkPacket};
 //use notify::{RecursiveMode, Watcher};
 use rollback::{dump_frame, Frame, MemoryManip, Rollbacker};
 use windows::{
-    imp::{HeapFree, WaitForSingleObject},
+    imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
         Foundation::{HMODULE, HWND},
-        System::{
-            Console::AllocConsole,
-            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
-        },
+        System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
     },
 };
 
 //mod netcode;
-//+83E1
+// +83E1
 // +2836D
 //004083dc actually
-//00407a21 game thread created here!
+//00407a21 game thread created here
 
 //#[cfg(debug_assertions)]
 const ISDEBUG: bool = false;
@@ -165,25 +163,25 @@ fn init(_: usize) -> Option<()> {
 }
 */
 
-use winapi::um::libloaderapi::GetModuleFileNameA;
+use winapi::um::libloaderapi::GetModuleFileNameW;
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 #[no_mangle]
 pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
-    let mut dat = [0u8; 1025];
+    let mut dat = [0u16; 1025];
     unsafe {
-        GetModuleFileNameA(
+        GetModuleFileNameW(
             std::mem::transmute(dllmodule),
-            &mut dat as *mut u8 as *mut i8,
+            &mut dat as *mut u16 as *mut u16,
             1024,
         )
     };
 
-    let s = std::str::from_utf8(&dat).unwrap();
+    let s = std::ffi::OsString::from_wide(&dat);
 
     //std::thread::sleep(Duration::from_millis(2000));
     //let m = init(0);
-    truer_exec(Some(Path::new(s).to_owned()));
+    truer_exec(Some(Path::new(&s).to_owned()));
     true
 }
 //687040 true real input buffer manipulation
@@ -218,7 +216,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 
 static TITLE: &str = "Soku with giuroll whatever :YoumuSleep:\0";
 
-unsafe extern "cdecl" fn skipbuffer(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
+unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
 static SOUND_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
 
@@ -243,12 +241,12 @@ fn truer_exec(filename: Option<PathBuf>) {
         LAST_DELAY_VALUE = 1;
     }
 
+    /*
     unsafe {
         AllocConsole();
     }
 
-    println!("here");
-
+    */
     #[cfg(any(NO))]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     unsafe {
@@ -292,6 +290,10 @@ fn truer_exec(filename: Option<PathBuf>) {
             ))
             .map(|x| match x {
                 Value::Int(x) => *x,
+
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
                 _ => todo!("non integer .ini entry"),
             })
             .unwrap_or(0);
@@ -303,11 +305,13 @@ fn truer_exec(filename: Option<PathBuf>) {
             ))
             .map(|x| match x {
                 Value::Int(x) => *x,
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
                 _ => todo!("non integer .ini entry"),
             })
             .unwrap_or(0);
 
-        
         unsafe {
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
@@ -406,41 +410,18 @@ fn truer_exec(filename: Option<PathBuf>) {
         ilhook::x86::Hooker::new(
             0x482701, // 0x482820, //0x482532, sokuroll <-
             HookType::JmpBack(goodhook),
-            ilhook::x86::CallbackOption::None,
-            00,
-            HookFlags::empty(),
+            0,
         )
-        .hook()
-    }
-    .unwrap();
-
-    let mut hook = vec![new];
+        .hook(6)
+    };
+    std::mem::forget(new);
 
     //0x899d60 maybe sound manager?
-    unsafe extern "cdecl" fn handle_sound(
+    unsafe extern "cdecl" fn handle_sound_real(
         a: *mut ilhook::x86::Registers,
         _b: usize,
         _c: usize,
     ) -> usize {
-        let ptr = *(((*a).esi + 0x4) as *const usize);
-        #[cfg(any(NO))]
-        info!("sound: {}", ptr);
-
-        let vtable = *(ptr as *const usize);
-        #[cfg(any(NO))]
-        info!("vtable: {}", vtable);
-
-        //skip
-        //0x401db6
-
-        //start but not restart?
-        //0x401da5
-
-        //0x401d81 no idea
-        0x401d92
-    }
-
-    unsafe extern "cdecl" fn report(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) -> usize {
         (*a).ecx = 0x89f9f8;
         (*a).eax = *(((*a).esp + 4) as *const u32);
         let soundid = (*a).eax as usize;
@@ -474,18 +455,16 @@ fn truer_exec(filename: Option<PathBuf>) {
             }
         }
     }
+
     let new = unsafe {
         ilhook::x86::Hooker::new(
             0x401d50, // 0x482820, //0x482532, sokuroll <-
-            HookType::JmpToRet(report),
-            ilhook::x86::CallbackOption::None,
+            HookType::JmpToRet(handle_sound_real),
             0,
-            HookFlags::empty(),
         )
-        .hook()
-    }
-    .unwrap();
-    hook.push(new);
+        .hook(6)
+    };
+    std::mem::forget(new);
 
     unsafe extern "cdecl" fn soundskiphook1(
         a: *mut ilhook::x86::Registers,
@@ -498,11 +477,8 @@ fn truer_exec(filename: Option<PathBuf>) {
             // 0x401d81
 
             let eax = *(((*a).esi + 4) as *const u32);
-
             let ecx = *(eax as *const u32);
-
             let fun = *((ecx + 0x48) as *const u32);
-
             let true_fun = std::mem::transmute::<usize, extern "thiscall" fn(u32, u32 /* , u32*/)>(
                 fun as usize,
             );
@@ -525,48 +501,12 @@ fn truer_exec(filename: Option<PathBuf>) {
         ilhook::x86::Hooker::new(
             0x401d7a, // 0x482820, //0x482532, sokuroll <-
             HookType::JmpToRet(soundskiphook1),
-            ilhook::x86::CallbackOption::None,
             0,
-            HookFlags::empty(),
         )
-        .hook()
-    }
-    .unwrap();
-    hook.push(new);
+        .hook(5)
+    };
+    std::mem::forget(new);
 
-    //sound
-    if false {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x401d64, // 0x482820, //0x482532, sokuroll <-
-                HookType::JmpToRet(handle_sound),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
-    if false {
-        //if this returns to 1db6, it will not play the sound
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x401d9f, // 0x482820, //0x482532, sokuroll <-
-                HookType::JmpToAddr(0x401db6 - 6, 0, skipbuffer),
-                ilhook::x86::CallbackOption::None,
-                00,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
-
-    //0x82251e
-    // on exit
     unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
@@ -576,16 +516,25 @@ fn truer_exec(filename: Option<PathBuf>) {
 
         SOUND_MUTEX.lock().unwrap().clear();
         SOUND_DELET_MUTEX.lock().unwrap().clear();
+        let heap = unsafe { *(0x89b404 as *const isize) };
+
+        // we should be removing allocations that happen during frames which were rolled back, but that somehow breaks it, possibly because of some null check initializations
+        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
+        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
+
+        for a in freeset {
+            unsafe { HeapFree(heap, 0, a as *const c_void) };
+        }
+
+        if let Some(x) = NETCODER.take() {
+            DATA_RECEIVER = Some(x.receiver);
+        }
 
         // it cannot be used by any different thread now
         if let Some(x) = ROLLBACKER.take() {
             for a in x.guessed {
                 a.prev_state.did_happen();
             }
-        }
-
-        if let Some(x) = NETCODER.take() {
-            DATA_RECEIVER = Some(x.receiver);
         }
 
         for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
@@ -595,180 +544,95 @@ fn truer_exec(filename: Option<PathBuf>) {
         GIRLSTALKED = false;
     }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x481960, // 0x482820, //0x482532, sokuroll <-
-            HookType::JmpBack(onexit),
-            ilhook::x86::CallbackOption::None,
-            00,
-            HookFlags::empty(),
-        )
-        .hook()
-    }
-    .unwrap();
-    hook.push(new);
+    let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(onexit), 0).hook(6) };
+    std::mem::forget(new);
 
     //0x4545a7 jump to here if dword ptr [EDI + 0x6e0] less or equal  than ESI
 
+    // changes the check in spectators so that packets are only sent if there is more than 10 of them in the buffer, to avoid sending incorrect inputs
     unsafe extern "cdecl" fn maybe_spectator(
         a: *mut ilhook::x86::Registers,
         _b: usize,
         _c: usize,
     ) -> usize {
-        //println!("here!");
         if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 10 {
-            //println!("rock bottom");
             0x4545a7
         } else {
             0x45457f
         }
     }
 
+    // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
     let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x454577, // 0x482820, //0x482532, sokuroll <-
-            HookType::JmpToRet(maybe_spectator),
-            ilhook::x86::CallbackOption::None,
-            00,
-            HookFlags::empty(),
-        )
-        .hook()
-    }
-    .unwrap();
-    hook.push(new);
+        ilhook::x86::Hooker::new(0x454577, HookType::JmpToRet(maybe_spectator), 0).hook(6)
+    };
+    std::mem::forget(new);
 
-    unsafe extern "cdecl" fn ongirlstalk(a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
         BATTLE_STARTED = false;
     }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x482960,
-            HookType::JmpBack(ongirlstalk),
-            ilhook::x86::CallbackOption::None,
-            00,
-            HookFlags::empty(),
-        )
-        .hook()
-    }
-    .unwrap();
-    hook.push(new);
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x482960, HookType::JmpBack(ongirlstalk), 0).hook(5) };
+    std::mem::forget(new);
 
     for a in [0x821730, 0x821759, 0x82251e, 0x82f09e, 0x82f18c] {
         let new = unsafe {
-            ilhook::x86::Hooker::new(
-                a,
-                //HookType::JmpBack(freeoverride),
-                HookType::JmpToAddr(a, 0xc, freeoverrideskip),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
+            ilhook::x86::Hooker::new(a, HookType::JmpToAddr(a + 6, 0xc, heap_free_override), 0)
+                .hook(6)
+        };
+        std::mem::forget(new);
     }
 
-    //big source of problems 0x47d6f0
-
-    for b in [0x821704, 0x8230e6, 0x823397, 0x82ed84, 0x82f15b] {
+    for b in [0x821704, 0x823397, 0x82ed84, 0x82f15b, 0x8230e6] {
         let new = unsafe {
-            ilhook::x86::Hooker::new(
-                b + 6,
-                HookType::JmpBack(allochook),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
-    let s = 0x82246d; //0x822465; /*this one is speccial, it's called a frame before so we don't know the heap, but it's constant and it's 0x89b404 */
-    {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                s,
-                HookType::JmpBack(allochook2),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
+            ilhook::x86::Hooker::new(b, HookType::JmpToAddr(b + 6, 0xc, heap_alloc_override), 0)
+                .hook(6)
+        };
+        std::mem::forget(new);
     }
 
-    for c in [0x82346f, 0x8233ee, 0x82f125] {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                c,
-                HookType::JmpBack(reallochook),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
+    let s = 0x822499; //0x822465;
+    let new =
+        unsafe { ilhook::x86::Hooker::new(s, HookType::JmpBack(heap_alloc_esi_result), 0).hook(6) };
+    std::mem::forget(new);
 
-    //prevent A pause
-    if true {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x482675,
-                HookType::JmpBack(apause),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
+    /*
+       for c in [0x82346f, 0x8233ee, 0x82f125] {
+           let new = unsafe {
+               ilhook::x86::Hooker::new(
+                   c,
+                   HookType::JmpBack(reallochook),
+                   ilhook::x86::CallbackOption::None,
+                   0,
+               )
+               .hook()
+           }
+           .unwrap();
+           hook.push(new);
+       }
+    */
+
+    //prevent A pause in replay mode
+
+    let new = unsafe { ilhook::x86::Hooker::new(0x482696, HookType::JmpBack(apause), 0).hook(6) };
+    std::mem::forget(new);
 
     // 0x428358 calls function checking if there is a next frame in net object
 
-    {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x41daea, //0x454f1f maybethebuffer, //0x454eba,//0x454e44, //0x41df86,
-                HookType::JmpBack(readonlinedata),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x41daea, HookType::JmpBack(readonlinedata), 0).hook(5) };
+    std::mem::forget(new);
+
+    //prevents a check for whether there is a frame from the opponent to allow for smooth rollback
+    unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
+        (*a).eax = *(0x8a0040 as *const u32);
     }
 
-    {
-        unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
-            (*a).eax = *(0x8a0040 as *const u32);
-        }
-
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x407f1b, //0x407f14,
-                HookType::JmpBack(set_eax_to_0),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x407f1b, HookType::JmpBack(set_eax_to_0), 0).hook(6) };
+    std::mem::forget(new);
 
     unsafe extern "cdecl" fn handle_raw_input(
         a: *mut ilhook::x86::Registers,
@@ -776,37 +640,22 @@ fn truer_exec(filename: Option<PathBuf>) {
         _c: usize,
     ) {
         //        0046c902 8b ae 6c        MOV        EBP,dword ptr [ESI + 0x76c]
-        //        07 00 00
 
         (*a).ebp = *(((*a).esi + 0x76c) as *const u32);
-
-        //        *(((*a).esi + 0x64) as *mut u8) = 0;
-
-        //input manager;
-
-        let m = (*a).ecx;
-
-        //        info!("{m}");
-
-        let somecheck = *((m + 0x4) as *const u8);
+        let input_manager = (*a).ecx;
 
         let real_input = match std::mem::replace(&mut REAL_INPUT, REAL_INPUT2.take()) {
             Some(x) => x,
             None => {
-                let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>(
-                    0x040a370, /*0x40a1a0*/
-                );
-                (f)(m);
+                let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>(0x040a370);
+                (f)(input_manager);
                 return;
             }
         };
 
-        //let next_check = *((m + 0x4) as *const i8);
-        //info!("{next_check}");
-
         {
-            let td = &mut *((m + 0x38) as *mut i32);
-            let lr = &mut *((m + 0x3c) as *mut i32);
+            let td = &mut *((input_manager + 0x38) as *mut i32);
+            let lr = &mut *((input_manager + 0x3c) as *mut i32);
 
             match (real_input[0], real_input[1]) {
                 (false, true) => *lr = (*lr).max(0) + 1,
@@ -822,7 +671,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         }
 
         for a in 0..6 {
-            let v = &mut *((m + 0x40 + a * 4) as *mut u32);
+            let v = &mut *((input_manager + 0x40 + a * 4) as *mut u32);
 
             if real_input[a as usize + 4] {
                 *v += 1;
@@ -831,132 +680,90 @@ fn truer_exec(filename: Option<PathBuf>) {
             }
         }
 
-        let m = &mut *((m + 0x62) as *mut u16);
+        let m = &mut *((input_manager + 0x62) as *mut u16);
         *m = 0;
         for a in 0..10 {
             if real_input[a] {
                 *m += 1 << a;
             }
         }
-
-        //additional check for some reason
-        //if (*m & (4 + 8)) == 4 + 8 {
-        //    *m = *m & ((0xFFFF - 8) - 4);
-        //}
     }
 
-    if true {
-        // todo : rename
+    // todo : rename
 
-        //return: 0x42839a
-        //online input loop,
+    //return: 0x42839a
+    //online input loop,
 
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x428374,
-                HookType::JmpToAddr(0x42837f - 5, 0, skipbuffer),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x428374, HookType::JmpToAddr(0x42837f /*- 5*/, 0, skip), 0)
+            .hook(5)
+    };
+    std::mem::forget(new);
 
-        unsafe extern "cdecl" fn skiponcehost(
-            a: *mut ilhook::x86::Registers,
-            _b: usize,
-            _c: usize,
-        ) -> usize {
-            if ESC > 60 {
-                ESC = 0;
-                0x428393
+    unsafe extern "cdecl" fn skiponcehost(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        if ESC > 60 {
+            ESC = 0;
+            0x428393
+        } else {
+            //info!("esi: {}", {(*a).esi});
+            let skip = DISABLE_SEND.load(Relaxed) != 0;
+            DISABLE_SEND.store(1, Relaxed);
+
+            //let skip = true;
+
+            if skip {
+                0x428360
             } else {
-                //info!("esi: {}", {(*a).esi});
-                let skip = DISABLE_SEND.load(Relaxed) != 0;
-                DISABLE_SEND.store(1, Relaxed);
-
-                //let skip = true;
-
-                if skip {
-                    0x428360
-                } else {
-                    (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                    (*a).eax = *(((*a).ecx) as *const u32);
-                    0x428335
-                }
+                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
+                (*a).eax = *(((*a).ecx) as *const u32);
+                0x428335
             }
         }
-
-        //input 00428341
-        /*
-        00481980 hm
-         */
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                /*0x4282f2, */ 0x428330,
-                //HookType::JmpToAddr(0x428360 - 5, 0, skipbuffer),
-                HookType::JmpToRet(skiponcehost),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-
-        unsafe extern "cdecl" fn skiponceclient(
-            a: *mut ilhook::x86::Registers,
-            _b: usize,
-            _c: usize,
-        ) -> usize {
-            if ESC > 60 {
-                ESC = 0;
-                0x4286c3
-            } else {
-                let skip = DISABLE_SEND.load(Relaxed) != 0;
-                DISABLE_SEND.store(1, Relaxed);
-                //let skip = true;
-                if skip {
-                    0x428630
-                } else {
-                    (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                    (*a).eax = *(((*a).ecx) as *const u32);
-                    0x428605
-                }
-            }
-        }
-
-        //input otherGameLoop
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                /*0x4285c2,*/ 0x428600,
-                HookType::JmpToRet(skiponceclient),
-                //HookType::JmpToAddr(0x428630 - 5, 0, skipbuffer),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x428644,
-                HookType::JmpToAddr(0x42864f - 5, 0, skipbuffer),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
     }
+
+    //input 00428341
+    /*
+    00481980 hm
+     */
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x428330, HookType::JmpToRet(skiponcehost), 0).hook(5) };
+    std::mem::forget(new);
+
+    unsafe extern "cdecl" fn skiponceclient(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        if ESC > 60 {
+            ESC = 0;
+            0x4286c3
+        } else {
+            let skip = DISABLE_SEND.load(Relaxed) != 0;
+            DISABLE_SEND.store(1, Relaxed);
+            //let skip = true;
+            if skip {
+                0x428630
+            } else {
+                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
+                (*a).eax = *(((*a).ecx) as *const u32);
+                0x428605
+            }
+        }
+    }
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x428600, HookType::JmpToRet(skiponceclient), 0).hook(5)
+    };
+    std::mem::forget(new);
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x428644, HookType::JmpToAddr(0x42864f, 0, skip), 0).hook(5)
+    };
+    std::mem::forget(new);
 
     unsafe extern "cdecl" fn timing_loop(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
         let waithandle = (*a).esi; //should I even use this? :/
@@ -979,7 +786,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         *target += ((1_000_000 / 60) + s).max(1005) as u128;
 
         let cur = m.elapsed().unwrap().as_micros();
-        let diff = (*target as i128 - cur as i128); // - 1000; //spinning
+        let diff = *target as i128 - cur as i128; // - 1000; //spinning
         if diff > 1_000_000 {
             panic!("big diff {diff}");
         }
@@ -1002,143 +809,29 @@ fn truer_exec(filename: Option<PathBuf>) {
             }
         }
     }
-    if true {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x4192f0, //0x46c8f7,
-                HookType::JmpToAddr(0x4193d7 - 6, 0, timing_loop),
-                //HookType::JmpBack(write_input_to_esi),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        std::mem::forget(new);
-        //hook.push(new);
-    }
 
-    if true {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x46c900, //0x46c8f7,
-                HookType::JmpToAddr(0x46c908 - 8, 0, handle_raw_input),
-                //HookType::JmpBack(write_input_to_esi),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-    }
-/*
-    if false {
-        static mut ST: Option<SystemTime> = None;
-        unsafe { ST = Some(SystemTime::now()) };
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x4192f0, HookType::JmpToAddr(0x4193d7, 0, timing_loop), 0).hook(6)
+    };
+    std::mem::forget(new);
+    //hook.push(new);
 
-        unsafe extern "cdecl" fn report_start(a: *mut ilhook::x86::Registers, _b: usize) {
-            // *(0x89ffb9 as *mut u8) = 1;
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x46c900,
+            HookType::JmpToAddr(0x46c908, 0, handle_raw_input),
+            0,
+        )
+        .hook(8)
+    };
+    std::mem::forget(new);
+    //hook.push(new);
 
-            let netmanager = *(0x8986a0 as *const usize);
-            if !(netmanager != 0 && *(netmanager as *const usize) != 0x858cac) {
-                ST = Some(SystemTime::now());
-                #[cfg(any(NO))]
-                info!("started ",)
-            }
-        }
-
-        unsafe extern "cdecl" fn reporttime(a: *mut ilhook::x86::Registers, _b: usize) {
-            let netmanager = *(0x8986a0 as *const usize);
-            if !(netmanager != 0 && *(netmanager as *const usize) != 0x858cac) {
-                if let Some(st) = ST {
-                    #[cfg(any(NO))]
-                    info!(
-                        "timeelapsed: {} {:0x}",
-                        st.elapsed().unwrap().as_millis(),
-                        _b
-                    )
-                } else {
-                    #[cfg(any(NO))]
-                    info!("BEFORE");
-                }
-            }
-        }
-        //00407cba insanely important
-
-        let new = unsafe {
-            ilhook::x86::Hooker::new(
-                0x407e26,
-                HookType::JmpBack(report_start),
-                ilhook::x86::CallbackOption::None,
-                0,
-                HookFlags::empty(),
-            )
-            .hook()
-        }
-        .unwrap();
-        hook.push(new);
-
-        //0x4285c4 0x4285e0
-
-        // 0x407f21 WAS REACHED
-        // f89 WAS REACHED
-        //0x407f3a
-        //[0x407e33, 0x407e9e, 0x407f21, 0x407f2c, 0x407f89, 0x407f98, 0x407f9d, 0x407f3c, 0x407fc6, 0x407f2c, 0x407f3c, 0x407f66]
-        /*
-        [
-            0x454760, 0x4547c0, 0x4549a0, 0x454800, 0x43fcc0, 0x43f950, 0x454640, 0x455340,
-            0x455070, 0x454910, 0x455180, 0x454c90, 0x454d30, 0x454a40, 0x454860, 0x43fc20,
-            0x43fc30, 0x454950, 0x43fc40, 0x4546a0, 0x4546c0,
-            ]
-            */
-        for a in [
-            0x407e33, 0x407ea4, 0x407f14, 0x408005, 0x408031, 0x419687, 0x41968d, 0x40803b,
-            0x4192f0, 0x4193dc, 0x4193a2,
-        ] {
-            let new = unsafe {
-                ilhook::x86::Hooker::new(
-                    a,
-                    HookType::JmpBack(reporttime),
-                    ilhook::x86::CallbackOption::None,
-                    a,
-                    HookFlags::empty(),
-                )
-                .hook()
-            }
-            .unwrap();
-            hook.push(new);
-        }
-    }
-
-
- */
-    //if false {
-    //    unsafe extern "cdecl" fn log_gametype(a: *mut ilhook::x86::Registers, _b: usize) {
-    //        #[cfg(any(NO))]
-    //        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
-    //    }
-
-    //    let new = unsafe {
-    //        ilhook::x86::Hooker::new(
-    //            0x43e5fb,
-    //            HookType::JmpBack(log_gametype),
-    //            ilhook::x86::CallbackOption::None,
-    //            0,
-    //            HookFlags::empty(),
-    //        )
-    //        .hook()
-    //    }
-    //    .unwrap();
-    //    hook.push(new);
-    //}
-
-    *HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
+    //*HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
 
     unsafe {
         std::thread::spawn(|| {
+            //wait to avoid being overwritten by th123e
             std::thread::sleep(Duration::from_millis(3000));
 
             let mut whatever = PAGE_PROTECTION_FLAGS(0);
@@ -1174,7 +867,7 @@ pub extern "cdecl" fn cleanup() {
         .unwrap()
         .into_vec()
         .into_iter()
-        .for_each(|x| unsafe { x.unhook() }.unwrap());
+        .for_each(|x| unsafe { x.unhook() });
 }
 
 unsafe fn set_input_buffer(input: [bool; 10], input2: [bool; 10]) {
@@ -1186,22 +879,39 @@ static REQUESTED_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 const SOKU_FRAMECOUNT: *mut usize = 0x8985d8 as *mut usize;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-unsafe extern "cdecl" fn freeoverrideskip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+
+static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     (*_a).eax = 1;
     let s = ((*_a).esp as usize + 2 * 4) as *mut usize;
-    return;
-    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
-        unsafe {
-            MEMORY_SENDER
-                .as_ref()
-                .unwrap()
-                .send(MemoryManip::Free(*s))
-                .unwrap()
-        };
-    } else {
-        let heap = unsafe { *(0x89b404 as *const isize) };
-        unsafe { HeapFree(heap, 0, *s as *const c_void) };
+    let flags = ((*_a).esp as usize + 1 * 4) as *mut usize;
+    let heap = ((*_a).esp as usize + 0 * 4) as *mut usize;
+
+    //if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+    if *(0x89b404 as *const usize) != *heap
+        || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
+    {
+        HeapFree((*heap) as isize, *flags as u32, *s as *const c_void);
+        return;
     }
+
+    FREEMUTEX.lock().unwrap().insert(*s);
+    return;
+    //todo: memory management
+    unsafe {
+        MEMORY_SENDER
+            .as_ref()
+            .unwrap()
+            .clone()
+            .send(MemoryManip::Free(*s))
+            .unwrap()
+    };
+
+    //} else {
+    //    let heap = unsafe { *(0x89b404 as *const isize) };
+    //    unsafe { HeapFree(heap, 0, *s as *const c_void) };
+    //}
     //info!("{}", *s);
     //let mut f = FRAMES.lock().unwrap();
     //
@@ -1216,39 +926,43 @@ unsafe extern "cdecl" fn freeoverrideskip(_a: *mut ilhook::x86::Registers, _b: u
     //A_COUNT.store(A_COUNT.load(Relaxed) + 1, Relaxed);
 }
 
+static ALLOCMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
 fn store_alloc(u: usize) {
     unsafe {
-        MEMORY_SENDER
-            .as_ref()
-            .unwrap()
-            .send(MemoryManip::Alloc(u))
-            .unwrap()
+        /*MEMORY_SENDER
+        .as_ref()
+        .unwrap()
+        .clone()
+        .send(MemoryManip::Alloc(u))
+        .unwrap()*/
+
+        ALLOCMUTEX.lock().unwrap().insert(u)
     };
-    //match FRAMES.lock().unwrap().last_mut() {
-    //    Some(x) => x.allocs.push(u),
-    //    None => (), //happened for sure
-    //}
 }
 
-unsafe extern "cdecl" fn allochook(a: *mut ilhook::x86::Registers, _b: usize) {
-    //let (s, heap) = unsafe {
-    //    //(
-    //    //    *(((*a).esp as usize + 2 * 4) as *mut usize),
-    //    //    *(((*a).esp as usize + 1 * 4) as *mut usize),
-    //    //)
-    //
-    //};
+unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+    let (s, flags, heap) = unsafe {
+        (
+            *(((*a).esp as usize + 2 * 4) as *mut usize),
+            *(((*a).esp as usize + 1 * 4) as *mut u32),
+            *(((*a).esp as usize + 0 * 4) as *mut isize),
+        )
+    };
 
-    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+    (*a).eax = HeapAlloc(heap, flags, s) as u32;
+
+    if *(0x89b404 as *const usize) != heap as usize {
+        println!("wrong heap alloc");
+    } else if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
         store_alloc((*a).eax as usize);
     }
 }
 
-unsafe extern "cdecl" fn allochook2(a: *mut ilhook::x86::Registers, _b: usize) {
-    //let s = unsafe { *(((*a).esp as usize + 1 * 4) as *mut usize) };
-
-    let ptr = unsafe { (*a).eax };
-    store_alloc(ptr as usize);
+unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
+    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+        store_alloc((*a).esi as usize);
+    }
 }
 
 #[allow(unused)]
@@ -1277,7 +991,7 @@ fn resume(battle_state: &mut u32) {
 
 static PAUSESTATE: AtomicU8 = AtomicU8::new(0);
 
-unsafe extern "cdecl" fn apause(a: *mut ilhook::x86::Registers, _b: usize) {
+unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) {
     //let pinput = 0x89a248;
     //let input = read_addr(0x89a248, 0x58).usize_align();
     let pstate = PAUSESTATE.load(Relaxed);
@@ -1325,82 +1039,41 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
-        //opponent has esced (probably) exit!
-        // let's have an incrementing value to make sure
+        //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
         ESC += 1;
         if ESC > 60 {
             BATTLE_STARTED = false;
         }
 
-        //we should probably make sure this is not a stray packet getting to us late
-
         //info!("received {} {} {}", type1, type2, sceneid);
     }
     //BATTLE_STARTED
 }
 
-unsafe extern "cdecl" fn highloop(a: *mut ilhook::x86::Registers, _b: usize) {
-    #[cfg(any(NO))]
-    info!("here HL!");
-}
-
 static mut GIRLSTALKED: bool = false;
 static DISABLE_SEND: AtomicU8 = AtomicU8::new(0);
 
-//interesting adress 43E363
-
-// relevant function to "skip buffer" : 0x4558a0
-
-static LASTFR: AtomicI32 = AtomicI32::new(0);
-static ENDED: AtomicI32 = AtomicI32::new(0);
-
 static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
-static GOOF: AtomicU8 = AtomicU8::new(0);
+
+//todo: improve rewind mechanism
+static IS_REWINDING: AtomicU8 = AtomicU8::new(0);
 
 unsafe fn handle_replay(
-    fc2: usize,
+    framecount: usize,
     battle_state: &mut u32,
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
     weird_counter: &mut u32,
 ) {
-    {
-        if let Some(x) = FRAMES.lock().unwrap().last_mut() {
-            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
-                match man {
-                    MemoryManip::Alloc(pos) => x.allocs.push(pos),
-                    MemoryManip::Free(pos) => x.frees.push(pos),
-                }
+    if let Some(x) = FRAMES.lock().unwrap().last_mut() {
+        while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+            match man {
+                MemoryManip::Alloc(pos) => x.allocs.push(pos),
+                MemoryManip::Free(pos) => x.frees.push(pos),
             }
         }
     }
-
-    let fc2 = *SOKU_FRAMECOUNT;
-    let p = LASTFR.load(Relaxed);
-
-    LASTFR.store(fc2 as i32, Relaxed);
-
-    if fc2 == 0 {
-        #[cfg(any(NO))]
-        if ISDEBUG {
-            info!("frame 0")
-        };
-        unsafe {
-            #[cfg(any(NO))]
-            if ISDEBUG {
-                info!("moutain_vapor_f0: {}", *(0x8971C0 as *const usize))
-            }
-        };
-        let w = std::mem::replace(&mut *FRAMES.lock().unwrap(), Vec::new());
-        for frame in w {
-            frame.did_happen();
-        }
-    }
-
-    //let mystcountpos: u32;
-
-    //0x57
 
     resume(battle_state);
     if PAUSESTATE.load(Relaxed) != 0 {
@@ -1409,13 +1082,13 @@ unsafe fn handle_replay(
     }
 
     if *cur_speed_iter == 0 {
-        GOOF.store(0, Relaxed);
         //"true" frame
+
+        IS_REWINDING.store(0, Relaxed);
         let qdown = read_key_better(0x10);
-        //let wdown = read_key_better(0x57);
 
         if qdown {
-            let target = (fc2 as u32).saturating_sub(*cur_speed) - 1;
+            let target = (framecount as u32).saturating_sub(*cur_speed) - 1;
             #[cfg(any(NO))]
             if ISDEBUG {
                 info!("qdown {}", target)
@@ -1434,7 +1107,7 @@ unsafe fn handle_replay(
 
                     let framenum = x.number as u32;
                     if framenum <= target {
-                        GOOF.store(1, Relaxed);
+                        IS_REWINDING.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
                         #[cfg(any(NO))]
@@ -1442,7 +1115,6 @@ unsafe fn handle_replay(
                             info!("diff: {}", diff)
                         };
 
-                        x.clone().did_happen();
                         x.restore();
 
                         //dump_frame();
@@ -1477,10 +1149,8 @@ unsafe fn handle_replay(
                     }
                 } else {
                     //nothing can be done ?
-                    if let Some(last) = last {
-                        //last.did_happen();
 
-                        last.clone().did_happen();
+                    if let Some(last) = last {
                         last.restore();
                         //did it happen?
                     }
@@ -1500,13 +1170,12 @@ unsafe fn handle_replay(
         }
     }
 
-    let fc2 = *SOKU_FRAMECOUNT;
+    let framecount = *SOKU_FRAMECOUNT;
 
-    if fc2 % 16 == 1 || GOOF.load(Relaxed) == 1 {
-        let start = Instant::now();
+    if framecount % 16 == 1 || IS_REWINDING.load(Relaxed) == 1 {
         #[cfg(any(NO))]
         if ISDEBUG {
-            info!("framecount: {}", fc2)
+            info!("framecount: {}", framecount)
         };
 
         let frame = dump_frame();
@@ -1514,11 +1183,6 @@ unsafe fn handle_replay(
         let mut mutex = FRAMES.lock().unwrap();
 
         mutex.push(frame);
-
-        //if ISDEBUG { info!("frame size: {}", frame.size_data()) };
-        //if ISDEBUG { info!("frame size: {}", frame.redundency_data()) };
-
-        let duration = start.elapsed();
 
         #[cfg(any(NO))]
         if ISDEBUG {
@@ -1553,24 +1217,23 @@ unsafe fn read_current_input() -> [bool; 10] {
     let raw_input_buffer = 0x8a01b8;
     let mut input = [false; 10];
 
-    let keyboard_d = *((local_input_manager + 0x4) as *const u8);
+    let controller_id = *((local_input_manager + 0x4) as *const u8);
     //if 255, then keyboard, if 0, or maybe something else, then controller
 
-    if keyboard_d == 255 {
+    if controller_id == 255 {
+        //no controllers, reading keyboard input
         for a in 0..10 {
             let key = (local_input_manager + 0x8 + a * 0x4) as *const u8;
-            //info!("here {}", key as usize);
+
             let key = *key as u32;
-            //info!("here");
+
             let key = *((raw_input_buffer + key) as *const u8) != 0;
             input[a] = key;
-
-            //info!("{a}: {}", key)
         }
     } else {
         let get_controller =
             std::mem::transmute::<usize, extern "thiscall" fn(u32, u32) -> u32>(0x40dc60);
-        let controler = get_controller(0x8a0198, keyboard_d as u32);
+        let controler = get_controller(0x8a0198, controller_id as u32);
 
         if controler != 0 {
             let axis1 = *(controler as *const i32);
@@ -1583,17 +1246,12 @@ unsafe fn read_current_input() -> [bool; 10] {
             input[1] = axis2 > 500;
 
             for a in 0..6 {
-                #[cfg(any(NO))]
-                info!("{a}");
                 let key = *((local_input_manager + 0x18 + a * 0x4) as *const i32);
-                #[cfg(any(NO))]
-                info!("second {a}");
+
                 if key > -1 {
                     input[a + 4] = *((key as u32 + 0x30 + controler) as *const u8) != 0;
                 }
             }
-            //info!("controller value1: {}", );
-            //info!("controller value2: {}", ;
         }
     }
 
@@ -1621,13 +1279,13 @@ static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
 
 unsafe fn handle_online(
-    fc2: usize,
+    framecount: usize,
     battle_state: &mut u32,
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
     state_sub_count: &mut u32,
 ) {
-    if fc2 == 0 {
+    if framecount == 0 {
         BATTLE_STARTED = true;
         let m = DATA_RECEIVER.take().unwrap();
 
@@ -1655,7 +1313,7 @@ unsafe fn handle_online(
 
     if !last_up && k_up {
         if netcoder.delay < 9 {
-            // values skewed by 1 because of the my frame-frame id offset
+            // values skewed by 1 because of the my_frame-frame_id offset
             netcoder.delay += 1;
         }
     }
@@ -1685,10 +1343,6 @@ unsafe fn handle_online(
         pause(battle_state, state_sub_count);
         return;
     }
-
-    //input buffer overrider first: 40a1a0, second 40A3AB
-
-    //th123.exe+2833A
 }
 
 unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
@@ -1696,7 +1350,7 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
 
     read_current_input();
-    let fc2 = *SOKU_FRAMECOUNT;
+    let framecount = *SOKU_FRAMECOUNT;
 
     let state_sub_count: &mut u32;
     let battle_state: &mut u32;
@@ -1708,33 +1362,28 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
         cur_speed_iter = &mut (*a).edi;
 
         let m = (w + 4 * 0x22) as *mut u32; //battle phase
-                                            //mystcountpos = (w + 4 * 1) as u32; //battle phase
 
         battle_state = &mut *m;
         state_sub_count = &mut *((w + 4) as *mut u32);
     }
-    //898680 potential manager one
-    //498718 potential manager two
 
-    //043e610 !!!!!!!!!!
-
-    //info!("gametype {}", *(0x898688 as *const usize));
     REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
 
     match *(0x898688 as *const usize) {
         2 => handle_replay(
-            fc2,
+            framecount,
             battle_state,
             cur_speed,
             cur_speed_iter,
             state_sub_count,
         ), //2 is replay
         1 => {
+            // 1 is netplay and v player
+            // todo: detect v player
             if !GIRLSTALKED {
                 // push unalocated memory onto the frames
-
                 handle_online(
-                    fc2,
+                    framecount,
                     battle_state,
                     cur_speed,
                     cur_speed_iter,
@@ -1744,16 +1393,4 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
         }
         _ => (),
     }
-
-    //handle uncollected references here
-
-    //while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
-    //    match man {
-    //        MemoryManip::Alloc(pos) => (), /* let this go through I guess*/
-    //        MemoryManip::Free(pos) => {
-    //            /let heap = unsafe { *(0x89b404 as *const isize) };
-    //            /unsafe { HeapFree(heap, 0, pos as *const c_void) };
-    //        }
-    //    }
-    //}
 }

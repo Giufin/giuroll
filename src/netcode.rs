@@ -1,11 +1,11 @@
+#[cfg(any(NO))]
+use log::info;
 use std::{
     collections::HashSet,
     sync::atomic::Ordering::Relaxed,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
-#[cfg(any(NO))]
-use log::info;
-use windows::Win32::Networking::WinSock::{sendto, WSAGetLastError, SOCKADDR, SOCKET};
+use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
 use crate::{input_to_accum, rollback::Rollbacker, TARGET_OFFSET};
 
@@ -143,8 +143,6 @@ impl Netcoder {
         rollbacker: &mut Rollbacker,
         current_input: [bool; 10],
     ) -> u32 {
-        
-
         let function_start_time = Instant::now();
         // self.id is lower than real framecount by 1, this is because we don't process frame 0
         while self.past_frame_starts.len() <= self.id {
@@ -171,11 +169,9 @@ impl Netcoder {
         std::thread::sleep(Duration::from_millis(1));
 
         while let Ok((packet, time)) = self.receiver.try_recv() {
-            
-
             if packet.id > self.id + 20 {
-                //this is a rare bug, that needs to be fixed, this is a temporary fix
-             //   info!("bad packet received!!");
+                //these are probably packets comming from the last round, we better avoid them
+
                 continue;
             }
 
@@ -199,22 +195,22 @@ impl Netcoder {
                     .cloned()
                     .unwrap_or(FrameTimeData::Empty);
 
-                let my_diff = match last {
-                    //IMPORTANT BUG TO FIX! this value is set to -1000 even if we are less than 1000 microseconds from completing out frame, which is possible only for targets with
+                match last {
+                    //bug! this value is set to -1000 even if we are less than 1000 microseconds from completing out frame, which is possible only for targets with
                     // less than 1000 microsecond ping. nevertheless it should be fixed at some point
                     FrameTimeData::Empty => {
-                        let r = if self.id + 1 < packet.id {
-                            -((time.elapsed().as_micros()) as i128 / 100)
-                        } else {
-                            -((time.elapsed().as_micros()) as i128 / 1000)
-                        };
+                        //let r = if self.id + 1 < packet.id {
+                        //    -((time.elapsed().as_micros()) as i128 / 100)
+                        //} else {
+                        //    -((time.elapsed().as_micros()) as i128 / 1000)
+                        //};
 
                         while self.past_frame_starts.len() <= packet.id {
                             self.past_frame_starts.push(FrameTimeData::Empty);
                         }
 
                         self.past_frame_starts[packet.id] = FrameTimeData::RemoteFirst(time);
-                        Some(r)
+                        //Some(r)
                     }
                     FrameTimeData::LocalFirst(x) => {
                         let r = time
@@ -232,14 +228,14 @@ impl Netcoder {
 
                         self.past_frame_starts[packet.id] = FrameTimeData::Done(r as i32);
 
-                        Some(r)
+                        //                        Some(r)
                     }
 
                     FrameTimeData::RemoteFirst(_) => {
-                        //info!("same frame received twice??");
-                        None
-                    } //todo!("should be unreachable"),
-                    FrameTimeData::Done(_) => None, // this can occur when manipulating delay
+                        //info!("same frame received twice");
+                        ()
+                    }
+                    FrameTimeData::Done(_) => (),
                 };
 
                 //if let Some(my_diff) = my_diff {
@@ -271,7 +267,7 @@ impl Netcoder {
                                 //info!("frame diff: remote first");
                                 TARGET_OFFSET.fetch_add(-200, Relaxed);
                             }
-                            Some(x) => (),
+                            Some(_) => (),
                             None => (), //info!("no time packet"),
                         }
                     }
@@ -285,7 +281,7 @@ impl Netcoder {
                     .cloned()
                     .unwrap_or(0);
                 if weather_remote != weather_local {
-                    //todo, add different desync indication
+                    //todo, add different desync indication !
                     #[cfg(any(NO))]
                     info!(
                         "DESYNC: local: {}, remote: {}",
@@ -327,8 +323,6 @@ impl Netcoder {
         }
 
         let input_head = self.id + self.delay;
-
-        //let tail = self.delay + self.max_rollback + 1;
 
         let input_range = self.id.saturating_sub(self.max_rollback + self.delay)..=input_head;
 
@@ -379,12 +373,10 @@ impl Netcoder {
             .confirms
             .contains(&((self.id + 1).saturating_sub(self.max_rollback)))
         {
-            //info!("something is missing: m: {m}, id: {}", self.id,);
+            //info!("frame is missing: m: {m}, id: {}", self.id,);
             0
         } else {
             //no pause, perform additional operations here
-
-            //self.missing_confirms.insert(self.id + self.delay);
 
             //todo: consider moving to it's own function
             match self.past_frame_starts[self.id].clone() {
@@ -397,7 +389,7 @@ impl Netcoder {
                         x.saturating_duration_since(function_start_time).as_micros() as i32,
                     )
                 }
-                FrameTimeData::Done(_) => (/* we are good */),
+                FrameTimeData::Done(_) => (),
             }
 
             self.id += 1;
@@ -409,22 +401,17 @@ impl Netcoder {
 unsafe fn send_packet(mut data: Box<[u8]>) {
     //info!("sending packet");
     data[0] = 0x69;
-    //buf[6..8].copy_from_slice(&input.to_le_bytes());
 
     let netmanager = *(0x8986a0 as *const usize);
 
     let socket = netmanager + 0x3e4;
 
-    //info!("nm {}", *(netmanager as *const usize));
-
     let to;
     if *(netmanager as *const usize) == 0x858cac {
         let it = (netmanager + 0x4c8) as *const usize;
         data[1] = 1;
-        //std::thread::sleep(Duration::from_millis(5));
+
         if *it == 0 {
-            #[cfg(any(NO))]
-            info!("panichere");
             panic!();
         }
         to = *(it as *const *const SOCKADDR);
@@ -432,8 +419,6 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
         data[1] = 2;
 
         if *(netmanager as *const usize) != 0x858d14 {
-            #[cfg(any(NO))]
-            info!("panichere2");
             panic!();
         }
         to = (netmanager + 0x47c) as *const SOCKADDR
@@ -442,7 +427,8 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
     let rse = sendto(*(socket as *const SOCKET), &data, 0, to, data.len() as i32);
 
     if rse == -1 {
-        //to do, change error handling for sockets 
+        //to do, change error handling for sockets
+        
         #[cfg(any(NO))]
         info!("socket err: {:?}", WSAGetLastError());
     }

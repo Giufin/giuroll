@@ -1,15 +1,12 @@
+#[cfg(any(NO))]
+use log::info;
 use std::{
     arch::asm,
     collections::{BTreeMap, HashMap, HashSet},
     ffi::c_void,
 };
-#[cfg(any(NO))]
-use log::info;
 
-use windows::{
-    imp::HeapFree,
-    Win32::System::Memory::{HeapHandle, HeapValidate},
-};
+use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
     force_sound_skip, set_input_buffer, ISDEBUG, MEMORY_RECEIVER, SOKU_FRAMECOUNT,
@@ -65,31 +62,25 @@ impl EnemyInputHolder {
             None if frame == 0 => Err([false; 10]),
             Some(None) | None => {
                 /*
-                               // here we need to guess what the input will be. to prevent guessing wrong on mashes we should be very conservative about our guesses
-                               let mut w = (1..3)
-                                   .map(|x| self.get(frame.saturating_sub(x)))
-                                   .reduce(|x, y| {
-                                       (0..10)
-                                           .map(|idx| x[idx] & y[idx])
-                                           .collect::<Vec<_>>()
-                                           .try_into()
-                                           .unwrap()
-                                   })
-                                   .unwrap();
+                    in the future maybe try dropping inputs for attacks that are about to charge?
+                    let mut w = (1..3)
+                        .map(|x| self.get(frame.saturating_sub(x)))
+                        .reduce(|x, y| {
+                            (0..10)
+                                .map(|idx| x[idx] & y[idx])
+                                .collect::<Vec<_>>()
+                                .try_into()
+                                .unwrap()
+                        })
+                        .unwrap();
 
-                               w[0..4].copy_from_slice(&self.get(frame - 1)[0..4]);
+                    w[0..4].copy_from_slice(&self.get(frame - 1)[0..4]);
                 */
 
                 Err(self.get(frame - 1))
             }
         }
     }
-}
-#[derive(Debug, Clone)]
-enum PlanFrame {
-    ApplyInput(RInput, RInput),
-    GuessInput(RInput, RInput, bool), //bool is "should save before"
-    Save,
 }
 
 pub struct Rollbacker {
@@ -110,14 +101,10 @@ pub struct Rollbacker {
     pub self_inputs: Vec<RInput>,
 
     pub weathers: HashMap<usize, u8>,
-    //pub consumer: std::sync::mpsc::Receiver<(usize, RInput)>,
 }
 
 impl Rollbacker {
-    pub fn guesslen(&self) -> usize {
-        self.guessed.len()
-    }
-    pub fn new(/*consumer: std::sync::mpsc::Receiver<(usize, RInput)> */) -> Self {
+    pub fn new() -> Self {
         Self {
             guessed: Vec::new(),
             current: 0,
@@ -126,19 +113,14 @@ impl Rollbacker {
             self_inputs: Vec::new(),
             weathers: HashMap::new(),
             future_sound: HashMap::new(),
-            //consumer,
         }
     }
+
     /// fill in inputs before calling this function
     pub fn start(&mut self) -> usize {
         //this should only be called on the 0th iteration.
-        self.current = unsafe { *SOKU_FRAMECOUNT }; //following
-        let mut newsound = std::mem::replace(&mut *SOUND_MUTEX.lock().unwrap(), BTreeMap::new());
-
-        //while let Ok((pos, input)) = self.consumer.try_recv() {
-        //    //info!("NTC received {:?}", (pos, input));
-        //    self.enemy_inputs.insert(input, pos);
-        //}
+        self.current = unsafe { *SOKU_FRAMECOUNT };
+        let newsound = std::mem::replace(&mut *SOUND_MUTEX.lock().unwrap(), BTreeMap::new());
 
         while self.guessed.len() > 0
             && (self
@@ -149,25 +131,12 @@ impl Rollbacker {
         {
             let m = self.guessed.remove(0);
 
-            //newsound.remove(&m.prev_state.number);
-
             self.weathers
                 .insert(m.prev_state.number, m.prev_state.weather_sync_check);
-            m.prev_state.did_happen();
+            //m.prev_state.did_happen(); here we should perform the frees that happen on a given frame, however this does not seem to work
         }
-
-        //info!("{:?}", newsound.remove(&(self.current - self.guessed.len())));
 
         *SOUND_DELET_MUTEX.lock().unwrap() = newsound;
-        if self.guessed.len() > 0 {
-
-            //info!(
-            //    "{:?} {:?}",
-            //    self.enemy_inputs
-            //        .get_result(self.guessed[0].prev_state.number),
-            //    self.guessed[0].enemy_input
-            //);
-        }
 
         self.rolling_back = false;
         self.guessed.len() + 1
@@ -181,19 +150,15 @@ impl Rollbacker {
 
         if is_p1 {
             unsafe { set_input_buffer(input, opponent_input) };
-            //LATEST_1.lock().unwrap().0 = input;
-            //LATEST_2.lock().unwrap().0 = opponent_input;
         } else {
             unsafe { set_input_buffer(opponent_input, input) };
-            //LATEST_1.lock().unwrap().0 = opponent_input;
-            //LATEST_2.lock().unwrap().0 = input;
         }
     }
 
     pub fn step(&mut self, iteration_number: usize) -> Option<()> {
         unsafe {
-            if self.guessed.len() > 0 && false {
-                //disabled for now because caused crashes
+            if self.guessed.len() > 0 && (self.rolling_back || iteration_number == 0) && false {
+                // this is how we were supposed to store the memory to be dealocated on-the-fly, but this also seems buggy
                 let last = if iteration_number == 0 {
                     self.guessed.len() - 1
                 } else {
@@ -201,6 +166,7 @@ impl Rollbacker {
                 };
 
                 while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                    //a
                     match man {
                         MemoryManip::Alloc(pos) => self.guessed[last].prev_state.allocs.push(pos), /* */
                         MemoryManip::Free(pos) => self.guessed[last].prev_state.frees.push(pos),
@@ -209,82 +175,81 @@ impl Rollbacker {
             }
         }
 
-        if self.guessed.len() == iteration_number {
+        let tbr = if self.guessed.len() == iteration_number {
             //last iteration for this frame, handle sound here
+
+            let mut to_be_skipped = vec![];
             {
-                let mut to_be_skipped = vec![];
-                {
-                    let new_sounds = &mut *SOUND_MUTEX.lock().unwrap();
-                    let old_sounds = &mut *SOUND_DELET_MUTEX.lock().unwrap();
+                let new_sounds = &mut *SOUND_MUTEX.lock().unwrap();
+                let old_sounds = &mut *SOUND_DELET_MUTEX.lock().unwrap();
 
-                    let new_col = new_sounds
-                        .values()
-                        .map(|x| x.into_iter())
-                        .flatten()
-                        .collect::<HashSet<_>>();
+                let new_col = new_sounds
+                    .values()
+                    .map(|x| x.into_iter())
+                    .flatten()
+                    .collect::<HashSet<_>>();
 
-                    //info!("new: {:?} old: {:?}", new_sounds, old_sounds);
-
-                    for idx in (self.current).saturating_sub(5)..(self.current) {
-                        if !new_sounds.contains_key(&idx) {
-                            //info!("key: {idx} not found");
-                            continue;
-                        }
-                        if let Some(x) = old_sounds.get(&idx) {
-                            for a in x {
-                                if !new_col.contains(a) {
-                                    to_be_skipped.push(*a);
-                                    //info!("{} shouldn't happen", a);
-                                }
+                for idx in (self.current).saturating_sub(5)..=(self.current) {
+                    if !new_sounds.contains_key(&idx) {
+                        continue;
+                    }
+                    if let Some(x) = old_sounds.get(&idx) {
+                        for a in x {
+                            if !new_col.contains(a) {
+                                to_be_skipped.push(*a);
                             }
                         }
                     }
-
-                    std::mem::swap(old_sounds, new_sounds);
-
-                    //let old_col = old_sounds
-                    //    .values()
-                    //    .map(|x| x.into_iter())
-                    //    .flatten()
-                    //    .collect::<HashSet<_>>();
-                    //
-                    //old_col.difference(&new_col).map(|x| **x).collect()
-                };
-                for a in to_be_skipped {
-                    force_sound_skip(a);
                 }
 
-                //*old_sounds = std::mem::replace(new_sounds, BTreeMap::new());
+                std::mem::swap(old_sounds, new_sounds);
+            };
+            for a in to_be_skipped {
+                force_sound_skip(a);
             }
 
             let si = self.self_inputs[self.current];
             let ei = self.enemy_inputs.get(self.current);
             Self::apply_input(si, ei);
             self.guessed.push(RollFrame::dump_with_guess(si, ei));
-            return Some(());
-        }
 
-        let fr = &mut self.guessed[iteration_number];
-
-        if self.rolling_back {
-            std::mem::replace(&mut fr.prev_state, unsafe { dump_frame() }).never_happened();
-            fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
-            Self::apply_input(fr.player_input, fr.enemy_input);
-            Some(())
-        } else if fr.enemy_input != self.enemy_inputs.get(fr.prev_state.number) {
-            //info!("ROLLBACK");
-            self.rolling_back = true;
-            fr.prev_state.clone().restore();
-            fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
-            Self::apply_input(fr.player_input, fr.enemy_input);
             Some(())
         } else {
-            None
-        }
-    }
+            let fr = &mut self.guessed[iteration_number];
 
-    pub(crate) fn write_self(&mut self, input: [bool; 10]) {
-        self.self_inputs.push(input);
+            if self.rolling_back {
+                unsafe {
+                    let mut frame = dump_frame();
+                    if false {
+                        unsafe {
+                            //this was another way of trying to handle the memory, that too failed
+                            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                                match man {
+                                    MemoryManip::Alloc(pos) => frame.allocs.push(pos),
+                                    MemoryManip::Free(pos) => frame.frees.push(pos),
+                                }
+                            }
+                        }
+                    }
+
+                    std::mem::replace(&mut fr.prev_state, frame)/* .never_happened()*/;
+                };
+                fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
+                Self::apply_input(fr.player_input, fr.enemy_input);
+                Some(())
+            } else if fr.enemy_input != self.enemy_inputs.get(fr.prev_state.number) {
+                //info!("ROLLBACK");
+                self.rolling_back = true;
+                fr.prev_state.clone().restore();
+                fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
+                Self::apply_input(fr.player_input, fr.enemy_input);
+                Some(())
+            } else {
+                None
+            }
+        };
+
+        tbr
     }
 }
 
@@ -295,15 +260,20 @@ pub struct RollFrame {
 }
 
 impl RollFrame {
-    fn apply(&mut self, enemy_input: RInput, player_input: RInput) {}
-
-    fn count(&self) -> usize {
-        self.prev_state.number
-    }
-
     fn dump_with_guess(player_input: RInput, guess: RInput) -> Self {
+        let mut prev_state = unsafe { dump_frame() };
+
+        unsafe {
+            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                match man {
+                    MemoryManip::Alloc(pos) => prev_state.allocs.push(pos),
+                    MemoryManip::Free(pos) => prev_state.frees.push(pos),
+                }
+            }
+        }
+
         Self {
-            prev_state: unsafe { dump_frame() },
+            prev_state,
             player_input: player_input,
             enemy_input: guess,
         }
@@ -323,11 +293,6 @@ pub unsafe fn dump_frame() -> Frame {
 
     let mut m = vec![];
 
-    //m.push(read_addr(mystcountpos as usize, 4));
-    //player1? object [2023-05-17T13:47:55.614854700Z INFO giuroll] eax: 0x4282f0
-    //0x895ec
-    /*
-     */
     #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x895ec")
@@ -336,7 +301,6 @@ pub unsafe fn dump_frame() -> Frame {
     let first = get_ptr(&ptr1.content[0..4], 0);
     m.push(read_addr(first, 0xec));
 
-    //if ISDEBUG { info!("o1: {:?} ", t) };
     {
         let t = read_vec(first + 0x1c);
 
@@ -345,21 +309,17 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(t.to_addr());
     }
 
-    //if ISDEBUG { info!("o2: {:?} ", t) };
     {
         let t = read_vec(first + 0x68);
         if t.start != 0 {
             m.push(t.read_underlying());
-            //info!("5ec+x68 was not 0");
         }
-        //m.push(t.to_addr());
     }
 
-    //if ISDEBUG { info!("o3: {:?} ", t) };
     {
         let t = read_linked_list(first + 0x78, 0);
 
-        m.extend(t.read_all().to_vec(/*needed to consume */).into_iter());
+        m.extend(t.read_all().to_vec().into_iter());
     }
 
     {
@@ -370,7 +330,7 @@ pub unsafe fn dump_frame() -> Frame {
 
     {
         m.extend(
-            read_deque(first + 0x28)
+            read_maybe_ring_buffer(first + 0x28)
                 .read_whole(0x10)
                 .to_vec()
                 .into_iter(),
@@ -391,11 +351,10 @@ pub unsafe fn dump_frame() -> Frame {
             .to_vec()
             .into_iter(),
     );
-    //    info!("hir");
+
     let llautosize = read_linked_list(first + 0x2c, 0);
     m.push(llautosize.clone().to_addr());
     m.push(read_addr(first + 0x2c + 0xc, 4));
-    //info!("hi2 {}", .usize_align()[0]);
 
     let mut lit = llautosize.read_underlying().to_vec().into_iter();
     m.push(lit.next().unwrap().to_addr());
@@ -404,7 +363,7 @@ pub unsafe fn dump_frame() -> Frame {
         let p = a.additional_data;
         if p != 0 {
             let size = match read_heap(p) {
-                0 => 0x70, //very weird, but I have no clue what's going on and if I don't check this it crashes
+                0 => 0x70, //very weird, but this is what sokuroll does
                 x => x,
             };
 
@@ -413,7 +372,6 @@ pub unsafe fn dump_frame() -> Frame {
         }
     }
 
-    //m.push(read_) to do ReadSizeDetect(param_1,(LinkedListTheThird *)(ppvVar1 + 0xb));
     m.extend(
         read_linked_list(first + 0x38, 0)
             .read_all()
@@ -430,11 +388,8 @@ pub unsafe fn dump_frame() -> Frame {
     let first = get_ptr(&ptr1.content[0..4], 0);
 
     m.push(read_addr(first, 0x94));
-    //info!("{:?}", read_deque(first));
-    //info!("{:?}", read_vec(first).read_underlying().usize_align());
 
     m.push(read_vec(first + 0x10).read_underlying());
-    //info!("{:?}", read_linked_list(first + 0x10, 0x178).read_all());
 
     m.push(read_vec(first + 0x20).read_underlying());
 
@@ -446,7 +401,7 @@ pub unsafe fn dump_frame() -> Frame {
     );
 
     let effect_linked_list = read_linked_list(first + 0x5c, 0x178).read_all().to_vec();
-    //info!("len {}", effect_linked_list.len());
+
     m.extend(effect_linked_list.into_iter());
 
     #[cfg(any(NO))]
@@ -454,11 +409,11 @@ pub unsafe fn dump_frame() -> Frame {
     if ISDEBUG {
         info!("0x8985e8")
     };
-    let read_weird = |m: &mut Vec<_>, pos: usize, size: usize| {
+    let read_weird_structure = |m: &mut Vec<_>, pos: usize, size: usize| {
+        //I'm not quite sure what's going on here, or if it's infact correct
         let dat = read_addr(pos, 0x14);
         let n = dat.usize_align();
 
-        //names taken from ghidra, thank you ghidra, very cool
         let v1 = n[2];
         let v2 = n[3];
         let read_from = n[1];
@@ -471,21 +426,16 @@ pub unsafe fn dump_frame() -> Frame {
                     info!("read_from is zero {:?}", n)
                 };
             }
-            //return;
         } else {
             m.push(read_addr(read_from, v1 * 4));
         }
         for a in 0..v3 {
             let addr = read_from + ((a + v2) % v1) * 4;
-            //if addr == 0 {
-            //    if ISDEBUG { info!("addr0: {}, {}", a, v3) };
-            //}
+
             m.push(read_addr(addr, size));
         }
     };
 
-    /*
-     */
     let ptr1 = read_addr(0x8985e8, 0x4);
     let first = get_ptr(&ptr1.content[0..4], 0);
 
@@ -507,10 +457,9 @@ pub unsafe fn dump_frame() -> Frame {
             .to_vec()
             .into_iter(),
     );
-    /*
-     */
-    read_weird(&mut m, first + 0x18c, 0xc);
-    read_weird(&mut m, first + 0x1c0, 0xc);
+
+    read_weird_structure(&mut m, first + 0x18c, 0xc);
+    read_weird_structure(&mut m, first + 0x1c0, 0xc);
 
     #[cfg(any(NO))]
     //0x8985e4
@@ -600,54 +549,40 @@ pub unsafe fn dump_frame() -> Frame {
     m.push(read_addr(first, 0x58));
     m.push(read_vec(first + 0x40).read_underlying());
 
-    //todo 180f0
-
     //0x8986a0
     #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x8986a0")
     };
 
-    //it wants a mutex from here on out, which is sus
+    //here sokuroll locks a mutex, but it seems unnecceseary
 
     let ptr1 = read_addr(0x8986a0, 0x4);
-    ////if ISDEBUG { info!("ptr1: {}", get_ptr(&ptr1.content[0..4], 0)) };
     let first = get_ptr(&ptr1.content[0..4], 0);
-    //
+    // netplay input buffer. TODO: find corresponding input buffers in replay mode
     if first != 0 {
         m.push(read_addr(first + 0xf8, 0x68));
         m.push(read_addr(first + 0x174, 0x68));
     }
 
-    //weird from here on out
-    //read some deque with first
     #[cfg(any(NO))]
     if ISDEBUG {
         info!("0x8985e4")
     };
 
-    let funky = |p: usize, offset: usize, m: &mut Vec<_>| {
-        let bullets = |pos: usize, char: u8, m: &mut Vec<_>| {
+    let read_character_data = |p: usize, offset: usize, m: &mut Vec<_>| {
+        let read_bullets = |pos: usize, char: u8, m: &mut Vec<_>| {
             let list = read_linked_list(pos, 0);
 
             m.extend(list.clone().read_all().to_vec().into_iter());
 
             let und = list.read_underlying();
 
-            //let mut w = und.to_vec().into_iter();
-            //m.push(w.next().unwrap().to_addr());
             for a in und.iter().skip(1) {
-                //I fucked up the organization here, it is what it is
                 m.push(a.clone().to_addr());
                 let d = a.additional_data;
                 if d != 0 {
                     let z = CHARSIZEDATA_B[char as usize];
-                    //let asize = read_heap(d);
-                    //
-                    //if z != asize {
-                    //    info!("unequal: {} {}", z, asize);
-                    //}
-
                     let bullet = read_addr(d, z);
                     m.push(bullet.clone());
                     let p1 = get_ptr(&bullet.content, 0x3a4);
@@ -669,7 +604,9 @@ pub unsafe fn dump_frame() -> Frame {
                         let s = read_heap(p3);
                         if s > 4000 {
                             #[cfg(any(NO))]
-                            info!("bullet data too big! {}", s)
+                            {
+                                info!("bullet data too big! {}", s)
+                            }
                         } else {
                             m.push(read_addr(p3, s));
                         }
@@ -726,12 +663,12 @@ pub unsafe fn dump_frame() -> Frame {
         let cdat = read_addr(old, CHARSIZEDATA_A[char as usize]);
         m.push(cdat.clone());
 
-        let todobullets = old + 0x17c;
-        bullets(todobullets, char, m);
+        let bullets = old + 0x17c;
+        read_bullets(bullets, char, m);
 
         if char == 5 {
             //youmu
-            read_weird(m, old + 0x8bc, 0x2c);
+            read_weird_structure(m, old + 0x8bc, 0x2c);
         }
 
         let mut z = vec![];
@@ -750,13 +687,11 @@ pub unsafe fn dump_frame() -> Frame {
         let new = get_ptr(&cdat.content, 0x6f8);
         m.push(read_addr(new, 0x68));
 
-        //sokuroll does some scuff here, reading the values one by one, I'm just not gonna bother
         let p4 = read_vec(new + 0x10);
         let w = p4.read_underlying();
 
         let i = p4.maybecapacity - p4.start;
         let i = (((i >> 0x1f) & 3) + i) >> 2;
-        //info!("fsiz {}, {}, {}", p4.end - p4.start, read_heap(p4.start), i);
 
         for a in 0..i {
             let p = get_ptr(&w.content, a * 4);
@@ -781,20 +716,18 @@ pub unsafe fn dump_frame() -> Frame {
         let p6 = read_linked_list(new + 0x30, 0);
         m.extend(p6.read_all().to_vec().into_iter());
 
-        //let p7 = bulletsagain
+        read_bullets(new + 0x5c, char, m);
 
-        bullets(new + 0x5c, char, m);
-
-        let p8 = read_deque(old + 0x7b0);
+        let p8 = read_maybe_ring_buffer(old + 0x7b0);
         m.extend(p8.read_whole(0x10).to_vec().into_iter());
 
-        let p9 = read_deque(old + 0x5e8);
+        let p9 = read_maybe_ring_buffer(old + 0x5e8);
         m.extend(p9.read_whole(0x98).to_vec().into_iter());
 
-        let p10 = read_deque(old + 0x5b0);
+        let p10 = read_maybe_ring_buffer(old + 0x5b0);
         m.extend(p10.read_whole(0x10).to_vec().into_iter());
 
-        let p11 = read_deque(old + 0x5fc);
+        let p11 = read_maybe_ring_buffer(old + 0x5fc);
         m.extend(p11.read_whole(0x10).to_vec().into_iter());
     };
 
@@ -802,27 +735,23 @@ pub unsafe fn dump_frame() -> Frame {
 
     let p3 = get_ptr(&i3.content, 0);
 
-    funky(p3, 0, &mut m);
+    read_character_data(p3, 0, &mut m);
 
-    funky(p3, 1, &mut m);
+    read_character_data(p3, 1, &mut m);
 
     #[cfg(any(NO))]
     if ISDEBUG {
         info!("bullets done");
     }
 
-    //let size = get_ptr(&a.content, 0x34c) as *const usize;
-
-    //m.push(read_addr(0x898718, 0x128));
-    //scuffed 0x89881c
+    m.push(read_addr(0x898718, 0x128));
 
     let sc1 = *(0x89881c as *const usize);
+    // not sure what this is
     if sc1 != 0 {
         m.push(read_addr(sc1, 0x50));
 
-        //100026f0
-
-        let sc2 = read_deque(sc1 + 0x3c);
+        let sc2 = read_maybe_ring_buffer(sc1 + 0x3c);
         let z = sc2.obj_s as i32;
 
         #[cfg(any(NO))]
@@ -834,10 +763,7 @@ pub unsafe fn dump_frame() -> Frame {
             let size = sc2.size as i32;
             let ptr = sc2.data as i32;
 
-            //info!("{:0x}", ptr);
-
             let z = {
-                //if is not gonna happen;
                 let y = (sc2.f3 as i32 - 1 + z) % (size * 8);
                 (ptr + ((y + (((y >> 0x1f) * 7) & 7)) >> 3)) as i32
             };
@@ -847,19 +773,8 @@ pub unsafe fn dump_frame() -> Frame {
             let x = (ptr + size).min(w + 0x28);
 
             m.push(read_addr(w as usize, (((x - w) >> 2) * 4) as usize));
-
-            /*let x = if(w + 0x28 <= x) {
-                w+0x28
-            } else {
-                x
-            };*/
         }
     }
-    //
-
-    // 0x1c, 0x68
-    //let p1c = read_vec(first + 0x1c, 12);
-    //let p68 = read_vec(first + 0x68, 12);
 
     let to_be_read = vec![
         (0x898600, 0x6c),
@@ -879,9 +794,6 @@ pub unsafe fn dump_frame() -> Frame {
         (0x8971c0, 0x14),
         (0x8971c8, 0x4c),
     ];
-    //if *(0x8985d8 as *const usize) != fc2 {
-    //    panic!();
-    //}
 
     for (pos, size) in to_be_read {
         let x = read_addr(pos, size);
@@ -926,7 +838,7 @@ impl ReadAddr {
 
     pub fn restore(self) {
         if self.pos == 0 || self.content.len() == 0 {
-            return; //
+            return;
         }
         let slice =
             unsafe { std::slice::from_raw_parts_mut(self.pos as *mut u8, self.content.len()) };
@@ -945,7 +857,7 @@ struct VecAddr {
 #[derive(Debug, Clone)]
 struct LL4 {
     pub pos: usize,
-    pub next: usize, //12 size, self
+    pub next: usize,
     pub field2: usize,
     pub additional_data: usize,
 }
@@ -965,8 +877,6 @@ impl LL4 {
     }
 
     fn read_underlying_additional(&self, size: usize) -> ReadAddr {
-        // if size == 0 {panic!()}
-
         let ret = read_addr(self.additional_data, size);
 
         ret
@@ -976,7 +886,7 @@ impl LL4 {
 #[derive(Debug, Clone)]
 struct LL3Holder {
     pub pos: usize,
-    pub ll4: usize, //12 size, self
+    pub ll4: usize,
     pub additional_size: usize,
     pub listcount: usize,
     pub add_data: usize,
@@ -996,7 +906,7 @@ impl LL3Holder {
             panic!("list too big");
         }
 
-        for a in 0..self.listcount {
+        for _ in 0..self.listcount {
             let last = b.last().unwrap();
             let next = last.next;
             if next == 0 {
@@ -1016,7 +926,7 @@ impl LL3Holder {
 
     fn read_all(self) -> Box<[ReadAddr]> {
         //I think that readLL3 does not read itself, however, I will leave this here because it cannot hurt
-        //if ISDEBUG { info!("funnierhere") };
+
         if self.listcount == 0 {
             Box::new([read_ll4(self.ll4).to_addr()])
         } else {
@@ -1140,7 +1050,7 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
     if pos == 0 || size == 0 {
         #[cfg(any(NO))]
         if ISDEBUG {
-            info!("unchecked 0 :(")
+            info!("unchecked 0 addr read")
         };
         return ReadAddr {
             pos: 0,
@@ -1162,7 +1072,6 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
                 let m = read_heap(pos);
                 //info!("here1 {}", pos);
                 if m != size && m != usize::MAX && m != 940 && m != 944 {
-                    
                     info!("values unequal, {} {}", m, size);
                 }
             }
@@ -1210,7 +1119,7 @@ fn read_ll4(pos: usize) -> LL4 {
 }
 
 #[must_use]
-fn read_deque(pos: usize) -> Deque {
+fn read_maybe_ring_buffer(pos: usize) -> Deque {
     let m = read_addr(pos, 20);
 
     let w = m
@@ -1242,17 +1151,18 @@ pub struct Frame {
     pub allocs: Vec<usize>,
 
     pub weather_sync_check: u8,
-    //charge_buffers: (Option<[i32; 6]>, Option<[i32; 6]>),
 }
 
 impl Frame {
     pub fn never_happened(self) {
+        let heap = unsafe { *(0x89b404 as *const isize) };
+
         for a in self.allocs {
-            let heap = unsafe { *(0x89b404 as *const isize) };
             #[cfg(any(NO))]
             if ISDEBUG {
                 info!("alloc: {}", a)
             };
+
             unsafe { HeapFree(heap, 0, a as *const c_void) };
         }
     }
@@ -1260,7 +1170,9 @@ impl Frame {
     pub fn did_happen(self) {
         for a in self.frees {
             let heap = unsafe { *(0x89b404 as *const isize) };
-            unsafe { HeapFree(heap, 0, a as *const c_void) };
+            if a != 0 {
+                unsafe { HeapFree(heap, 0, a as *const c_void) };
+            }
         }
     }
 
@@ -1295,14 +1207,7 @@ impl Frame {
         }
 
         for a in self.adresses.clone().to_vec().into_iter() {
-            //if ISDEBUG { info!("trying to restore {}", a.pos) };
             a.restore();
-            //if ISDEBUG { info!("success") };
         }
-
-        //*PREVIOUS_1.lock().unwrap() = self.charge_buffers.0;
-        //*PREVIOUS_2.lock().unwrap() = self.charge_buffers.1;
-
-        //self.did_happen();
     }
 }
