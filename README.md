@@ -48,6 +48,6 @@ Ysaron - for majority of the testing
 
 ChèvreDeFeu, TStar, Barcode, Rouen, Klempfer, LunaTriv, Aquatic and BIG BREWED - for additional testing
 
-Slavfox - for various help with reverse engineering and open source
+[Slavfox](https://github.com/slavfox) - for various help with reverse engineering and open source
 
 Fireseal - for making the original rollback mod for hisoutensoku
