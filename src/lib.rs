@@ -17,7 +17,7 @@ mod rollback;
 use ilhook::x86::{HookPoint, HookType};
 
 //use libloadng::Library;
-#[cfg(any(NO))]
+#[cfg(feature = "logtofile")]
 use log::info;
 use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
@@ -27,7 +27,10 @@ use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
         Foundation::{HMODULE, HWND},
-        System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+        System::{
+            Console::AllocConsole,
+            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+        },
     },
 };
 
@@ -41,7 +44,7 @@ use windows::{
 const ISDEBUG: bool = false;
 //#[cfg(not(debug_assertions))]
 //const ISDEBUG: bool = false;
-#[cfg(any(NO))]
+#[cfg(feature = "logtofile")]
 pub fn set_up_fern() -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         // Perform allocation-free log formatting
@@ -166,6 +169,16 @@ fn init(_: usize) -> Option<()> {
 use winapi::um::libloaderapi::GetModuleFileNameW;
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
+
+#[no_mangle]
+pub unsafe extern "cdecl" fn exeinit() {
+    unsafe {
+        //AllocConsole();
+        //println!("here {:?}", std::env::current_dir());
+    }
+    truer_exec(Some(std::env::current_dir().unwrap()));
+}
+
 #[no_mangle]
 pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
     let mut dat = [0u16; 1025];
@@ -181,7 +194,9 @@ pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
 
     //std::thread::sleep(Duration::from_millis(2000));
     //let m = init(0);
-    truer_exec(Some(Path::new(&s).to_owned()));
+    let mut filepath = Path::new(&s).to_owned();
+    filepath.pop();
+    truer_exec(Some(filepath));
     true
 }
 //687040 true real input buffer manipulation
@@ -198,11 +213,6 @@ pub extern "cdecl" fn CheckVersion(a: *const [u8; 16]) -> bool {
         0x2e,
     ];
     unsafe { *a == HASH110 }
-}
-
-#[no_mangle]
-pub extern "cdecl" fn true_exec() {
-    truer_exec(None);
 }
 
 static mut REAL_INPUT: Option<[bool; 10]> = None;
@@ -225,6 +235,9 @@ static SOUND_DELET_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeM
 
 static mut FORCE_SOUND_SKIP: bool = false;
 
+//this is getting bad, fix the redundancy
+static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new());
+
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
         let forcesound = std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x401d50);
@@ -237,17 +250,22 @@ pub fn force_sound_skip(soundid: usize) {
 }
 
 fn truer_exec(filename: Option<PathBuf>) {
+    #[cfg(feature = "logtofile")]
+    {
+        set_up_fern().unwrap();
+        info!("here");
+    }
+
     unsafe {
         LAST_DELAY_VALUE = 1;
     }
 
-    /*
+    // /*
     unsafe {
-        AllocConsole();
+        //AllocConsole();
     }
-
-    */
-    #[cfg(any(NO))]
+    // */
+    #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     unsafe {
         let mut b = PAGE_PROTECTION_FLAGS(0);
@@ -267,19 +285,23 @@ fn truer_exec(filename: Option<PathBuf>) {
         DATA_SENDER = Some(s);
 
         let (s, r) = std::sync::mpsc::channel();
-        MEMORY_RECEIVER = Some(r);
-        MEMORY_SENDER = Some(s);
+        MEMORY_RECEIVER_FREE = Some(r);
+        MEMORY_SENDER_FREE = Some(s);
+
+        let (s, r) = std::sync::mpsc::channel();
+        MEMORY_RECEIVER_ALLOC = Some(r);
+        MEMORY_SENDER_ALLOC = Some(s);
     }
 
     unsafe {
         LAST_DELAY_VALUE = 3;
     }
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     let _ = set_up_fern();
     if let Some(mut filepath) = filename {
-        filepath.pop();
         filepath.push("giuroll.ini");
 
+        println!("{:?}", filepath);
         let conf = mininip::parse::parse_file(filepath).unwrap();
         //let keyboard_section = conf.section(Some("Keyboard")).unwrap();
 
@@ -316,12 +338,14 @@ fn truer_exec(filename: Option<PathBuf>) {
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
         }
+    } else {
+        todo!()
     }
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("true_exec ran, or did it")
     };
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     unsafe {
         if ISDEBUG {
             info!("moutain_vapor: {}", *(0x8971C0 as *const usize))
@@ -404,16 +428,27 @@ fn truer_exec(filename: Option<PathBuf>) {
 
             *(funnyaddr as *mut u8) = 0xc3;
         }
+
+        /*
+               let funnyaddr = 0x454417;
+               let mut b = PAGE_PROTECTION_FLAGS(0);
+
+               VirtualProtect(
+                   funnyaddr as *const c_void,
+                   5,
+                   PAGE_PROTECTION_FLAGS(0x40),
+                   &mut b as *mut PAGE_PROTECTION_FLAGS,
+               );
+
+               *(funnyaddr as *mut u32) = 0x000108E9;
+        */
     }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x482701, // 0x482820, //0x482532, sokuroll <-
-            HookType::JmpBack(goodhook),
-            0,
-        )
-        .hook(6)
-    };
+    let new = unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(goodhook), 0).hook(6) };
+    std::mem::forget(new);
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x482745, HookType::JmpBack(frameexithook), 0).hook(6) };
     std::mem::forget(new);
 
     //0x899d60 maybe sound manager?
@@ -422,6 +457,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         _b: usize,
         _c: usize,
     ) -> usize {
+        //let sw = REQUESTED_THREAD_ID.swap(0, Relaxed);
         (*a).ecx = 0x89f9f8;
         (*a).eax = *(((*a).esp + 4) as *const u32);
         let soundid = (*a).eax as usize;
@@ -430,15 +466,11 @@ fn truer_exec(filename: Option<PathBuf>) {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
         }
 
-        //if FORCE_SOUND_SKIP && false {
-
-        //};
-
         let mut w = SOUND_MUTEX.lock().unwrap();
         let w2 = &mut *w;
         let items = w2.entry(*SOKU_FRAMECOUNT).or_insert_with(|| Vec::new());
 
-        if soundid == 0 || items.iter().find(|x| **x == soundid).is_some() {
+        let ret = if soundid == 0 || items.iter().find(|x| **x == soundid).is_some() {
             0x401db7
         } else {
             let old = SOUND_DELET_MUTEX.lock().unwrap();
@@ -453,7 +485,9 @@ fn truer_exec(filename: Option<PathBuf>) {
             } else {
                 0x401d58
             }
-        }
+        };
+        //REQUESTED_THREAD_ID.swap(sw, Relaxed);
+        ret
     }
 
     let new = unsafe {
@@ -508,23 +542,28 @@ fn truer_exec(filename: Option<PathBuf>) {
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
+        REQUESTED_THREAD_ID.store(0, Relaxed);
+        
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
         BATTLE_STARTED = false;
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
-
+        
         SOUND_MUTEX.lock().unwrap().clear();
         SOUND_DELET_MUTEX.lock().unwrap().clear();
+
+        INPUTS_RAW.lock().unwrap().clear();
         let heap = unsafe { *(0x89b404 as *const isize) };
 
         // we should be removing allocations that happen during frames which were rolled back, but that somehow breaks it, possibly because of some null check initializations
-        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
-        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
-
-        for a in freeset {
-            unsafe { HeapFree(heap, 0, a as *const c_void) };
-        }
+        //let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
+        //let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
+        //
+        //for a in allocset.difference(&freeset) {
+        //    //    unsafe { HeapFree(heap, 0, *a as *const c_void) };
+        //    println!("freed but not alloced: {}", a);
+        //}
 
         if let Some(x) = NETCODER.take() {
             DATA_RECEIVER = Some(x.receiver);
@@ -547,26 +586,101 @@ fn truer_exec(filename: Option<PathBuf>) {
     let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(onexit), 0).hook(6) };
     std::mem::forget(new);
 
+    unsafe extern "cdecl" fn onexitexit(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+        let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>((*a).edx as usize);
+
+        f((*a).ecx);
+        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
+        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
+
+        for a in allocset.difference(&freeset) {
+            //    unsafe { HeapFree(heap, 0, *a as *const c_void) };
+            println!("alloced but not freed: {}", a);
+        }
+        return;
+        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
+        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
+
+        for a in &freeset {
+            //    unsafe { HeapFree(heap, 0, *a as *const c_void) };
+            println!("since then freed: {}", a);
+        }
+    }
+
+    let return_insert_addr = 0x48196f + 5;
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x48196f,
+            HookType::JmpToAddr(return_insert_addr, 0, onexitexit),
+            0,
+        )
+        .hook(5)
+    };
+
+    std::mem::forget(new);
+
+    let funnyaddr = return_insert_addr;
+    let mut b = PAGE_PROTECTION_FLAGS(0);
+    unsafe {
+        VirtualProtect(
+            funnyaddr as *const c_void,
+            1,
+            PAGE_PROTECTION_FLAGS(0x40),
+            &mut b as *mut PAGE_PROTECTION_FLAGS,
+        );
+
+        *(funnyaddr as *mut u8) = 0xc3;
+    }
+
     //0x4545a7 jump to here if dword ptr [EDI + 0x6e0] less or equal  than ESI
 
-    // changes the check in spectators so that packets are only sent if there is more than 10 of them in the buffer, to avoid sending incorrect inputs
+    // changes the check in spectators so that packets are only sent if there is more than N of them in the buffer, to avoid sending incorrect inputs
+    // N was initially 10, but it would desync on round end (one thing to look at is the fact that replays always start to stutter at round end)
     unsafe extern "cdecl" fn maybe_spectator(
         a: *mut ilhook::x86::Registers,
         _b: usize,
         _c: usize,
     ) -> usize {
-        if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 10 {
+        if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 40 {
+            //
             0x4545a7
         } else {
             0x45457f
         }
     }
 
+    if false {}
     // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
     let new = unsafe {
         ilhook::x86::Hooker::new(0x454577, HookType::JmpToRet(maybe_spectator), 0).hook(6)
     };
     std::mem::forget(new);
+
+    unsafe extern "cdecl" fn spectator_report(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+      
+    )  {
+        let eax = (*a).eax;
+        let ptr = eax as *mut u16;
+
+        let frame = (*a).esi / 2 + 1;
+        let player = (*a).esi & 1;
+        
+
+        let mine = INPUTS_RAW.lock().unwrap().get(&(frame as usize)).unwrap()[player as usize];
+        let old = *ptr;
+        *ptr = mine;
+
+        println!("addr: {}, their input: {}, mine input: {}, frame: {}", eax, old, mine, (*a).esi);
+    }
+
+    // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x45458b, HookType::JmpBack(spectator_report), 0).hook(5)
+    };
+    std::mem::forget(new);
+
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
@@ -709,11 +823,10 @@ fn truer_exec(filename: Option<PathBuf>) {
             ESC = 0;
             0x428393
         } else {
-            //info!("esi: {}", {(*a).esi});
-            let skip = DISABLE_SEND.load(Relaxed) != 0;
-            DISABLE_SEND.store(1, Relaxed);
+            //let skip = DISABLE_SEND.load(Relaxed) != 0;
+            //DISABLE_SEND.store(1, Relaxed);
 
-            //let skip = true;
+            let skip = true;
 
             if skip {
                 0x428360
@@ -742,9 +855,11 @@ fn truer_exec(filename: Option<PathBuf>) {
             ESC = 0;
             0x4286c3
         } else {
-            let skip = DISABLE_SEND.load(Relaxed) != 0;
-            DISABLE_SEND.store(1, Relaxed);
-            //let skip = true;
+            //let skip = DISABLE_SEND.load(Relaxed) != 0;
+            //DISABLE_SEND.store(1, Relaxed);
+
+            let skip = true;
+
             if skip {
                 0x428630
             } else {
@@ -794,7 +909,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //info!("frame diff micro diff: {}", diff);
         let ddiff = (diff / 1000) as i32;
         let ddiff = if ddiff < 0 {
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
             *target = cur + (1_000_000 / 60) as u128;
             3
@@ -853,7 +968,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 #[no_mangle]
 pub extern "cdecl" fn cleanup() {
     if ISDEBUG {
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         info!("cleaning up the hook")
     };
 
@@ -888,23 +1003,37 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
     let flags = ((*_a).esp as usize + 1 * 4) as *mut usize;
     let heap = ((*_a).esp as usize + 0 * 4) as *mut usize;
 
+    //if let Some(x) = MEMORYMUTEX.lock().unwrap().remove(&*s) {
+    //    if x != *SOKU_FRAMECOUNT {
+    //        println!("freeing memory allocated at frame: {}, current: {}", x, *SOKU_FRAMECOUNT)
+    //    }
+    //}
+
     //if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
-    if *(0x89b404 as *const usize) != *heap
-        || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
+    if
+    /* !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
+    || */
+    *(0x89b404 as *const usize) != *heap
+    /* || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
+    || *SOKU_FRAMECOUNT == 0 */
     {
         HeapFree((*heap) as isize, *flags as u32, *s as *const c_void);
         return;
     }
 
-    FREEMUTEX.lock().unwrap().insert(*s);
-    return;
-    //todo: memory management
+    //if {
+    //    println!("missmatched scene id")
+    //} // never happens
+
+    //FREEMUTEX.lock().unwrap().insert(*s);
+    //return;
+
     unsafe {
-        MEMORY_SENDER
+        MEMORY_SENDER_FREE
             .as_ref()
             .unwrap()
             .clone()
-            .send(MemoryManip::Free(*s))
+            .send(*s)
             .unwrap()
     };
 
@@ -927,18 +1056,21 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
 }
 
 static ALLOCMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+static MEMORYMUTEX: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 
 fn store_alloc(u: usize) {
     unsafe {
-        /*MEMORY_SENDER
-        .as_ref()
-        .unwrap()
-        .clone()
-        .send(MemoryManip::Alloc(u))
-        .unwrap()*/
+        //ALLOCMUTEX.lock().unwrap().insert(u);
+        //MEMORYMUTEX.lock().unwrap().insert(u, *SOKU_FRAMECOUNT);
+        //return;
 
-        ALLOCMUTEX.lock().unwrap().insert(u)
-    };
+        MEMORY_SENDER_ALLOC
+            .as_ref()
+            .unwrap()
+            .clone()
+            .send(u)
+            .unwrap();
+    }
 }
 
 unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
@@ -952,15 +1084,21 @@ unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b:
 
     (*a).eax = HeapAlloc(heap, flags, s) as u32;
 
-    if *(0x89b404 as *const usize) != heap as usize {
-        println!("wrong heap alloc");
+    if *(0x89b404 as *const usize) != heap as usize
+        || !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
+        || *SOKU_FRAMECOUNT == 0
+    {
+        //println!("wrong heap alloc");
     } else if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
         store_alloc((*a).eax as usize);
     }
 }
 
 unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
-    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed)
+        && matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
+        && *SOKU_FRAMECOUNT != 0
+    {
         store_alloc((*a).esi as usize);
     }
 }
@@ -1014,7 +1152,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     let esp = (*a).esp;
 
     let packet_pointer = esp + 0x70;
-    let slic = std::slice::from_raw_parts(packet_pointer as *const u8, 400);
+    let slic = std::slice::from_raw_parts_mut(packet_pointer as *mut u8, 400);
     let type1 = slic[0];
     let type2 = slic[1];
 
@@ -1025,8 +1163,58 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //   let input2 = slic[9];
 
     if type1 == 0x69 {
-        (*a).eax = 0x400;
         let z = NetworkPacket::decode(slic);
+        if DISABLE_SEND.load(Relaxed) == 0 {
+            DISABLE_SEND.store(1, Relaxed);
+
+            let is_p1 = unsafe {
+                let netmanager = *(0x8986a0 as *const usize);
+                *(netmanager as *const usize) == 0x858cac
+            };
+            if !is_p1 {
+                slic.copy_from_slice(&[
+                    13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
+                    104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0, 208, 0,
+                    208, 0, 208, 0, 1, 15, 0, 0, 0, 142, 15, 14, 252, 36, 143, 52, 108, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ])
+            } else {
+                slic.copy_from_slice(&[
+                    14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0, 102,
+                    0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0, 201, 0, 201,
+                    0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 69, 119, 176, 189, 128, 118, 60, 0, 0,
+                    18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0,
+                ])
+            }
+            //the packet you receive first round
+        } else {
+            (*a).eax = 0x400;
+        }
 
         DATA_SENDER
             .as_ref()
@@ -1035,7 +1223,15 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             .unwrap();
     }
     if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 {
-        //        info!("received {} {}", type1, type2);
+        let is_p1 = unsafe {
+            let netmanager = *(0x8986a0 as *const usize);
+            *(netmanager as *const usize) == 0x858cac
+        };
+
+        println!(
+            "received {} {}, data: {:?} as {}",
+            type1, type2, slic, is_p1
+        );
     }
 
     if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
@@ -1067,11 +1263,14 @@ unsafe fn handle_replay(
     weird_counter: &mut u32,
 ) {
     if let Some(x) = FRAMES.lock().unwrap().last_mut() {
-        while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
-            match man {
-                MemoryManip::Alloc(pos) => x.allocs.push(pos),
-                MemoryManip::Free(pos) => x.frees.push(pos),
-            }
+        //TODO
+        while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
+            x.allocs.push(man);
+        }
+
+        while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
+            x.frees.push(man);
+            x.allocs.retain(|x| *x != man);
         }
     }
 
@@ -1089,7 +1288,7 @@ unsafe fn handle_replay(
 
         if qdown {
             let target = (framecount as u32).saturating_sub(*cur_speed) - 1;
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             if ISDEBUG {
                 info!("qdown {}", target)
             };
@@ -1110,13 +1309,13 @@ unsafe fn handle_replay(
                         IS_REWINDING.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
-                        #[cfg(any(NO))]
+                        #[cfg(feature = "logtofile")]
                         if ISDEBUG {
                             info!("diff: {}", diff)
                         };
 
-                        x.restore();
-
+                        x.clone().restore();
+                        //x.did_happen();
                         //dump_frame();
                         //unsafe {
                         //    FPST = x.fp;
@@ -1156,14 +1355,14 @@ unsafe fn handle_replay(
                     }
                     pause(battle_state, weird_counter);
                     *cur_speed_iter = *cur_speed;
-                    #[cfg(any(NO))]
+                    #[cfg(feature = "logtofile")]
                     if ISDEBUG {
                         info!("missing frame")
                     };
                     return;
                 }
             }
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             if ISDEBUG {
                 info!(" restore complete success")
             };
@@ -1173,7 +1372,7 @@ unsafe fn handle_replay(
     let framecount = *SOKU_FRAMECOUNT;
 
     if framecount % 16 == 1 || IS_REWINDING.load(Relaxed) == 1 {
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         if ISDEBUG {
             info!("framecount: {}", framecount)
         };
@@ -1184,11 +1383,7 @@ unsafe fn handle_replay(
 
         mutex.push(frame);
 
-        #[cfg(any(NO))]
-        if ISDEBUG {
-            info!("time elapsed on saving: {}", duration.as_nanos())
-        };
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         if ISDEBUG {
             info!("frame successfull")
         };
@@ -1264,15 +1459,18 @@ static mut NETCODER: Option<Netcoder> = None;
 static mut DATA_SENDER: Option<std::sync::mpsc::Sender<(NetworkPacket, Instant)>> = None;
 static mut DATA_RECEIVER: Option<std::sync::mpsc::Receiver<(NetworkPacket, Instant)>> = None;
 
-static mut MEMORY_SENDER: Option<std::sync::mpsc::Sender<MemoryManip>> = None;
-static mut MEMORY_RECEIVER: Option<std::sync::mpsc::Receiver<MemoryManip>> = None;
+static mut MEMORY_SENDER_FREE: Option<std::sync::mpsc::Sender<usize>> = None;
+static mut MEMORY_RECEIVER_FREE: Option<std::sync::mpsc::Receiver<usize>> = None;
+
+static mut MEMORY_SENDER_ALLOC: Option<std::sync::mpsc::Sender<usize>> = None;
+static mut MEMORY_RECEIVER_ALLOC: Option<std::sync::mpsc::Receiver<usize>> = None;
 
 // this value is offset by 1, because we start sending frames at frame 1, meaning that input for frame n + 1 is sent in packet n
 static mut LAST_DELAY_VALUE: usize = 0;
 
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
-static mut BATTLE_STARTED: bool = false; 
+static mut BATTLE_STARTED: bool = false;
 static mut ESC: u8 = 0; // maybe shouldn't be not atomic
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
@@ -1345,12 +1543,21 @@ unsafe fn handle_online(
     }
 }
 
+unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize) {
+    //REQUESTED_THREAD_ID.store(0, Relaxed);
+}
+
 unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
+    //REQUESTED_THREAD_ID.store(0, Relaxed);
+
+    let framecount = *SOKU_FRAMECOUNT;
+    if framecount > 5 {
+        REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
+    }
 
     read_current_input();
-    let framecount = *SOKU_FRAMECOUNT;
 
     let state_sub_count: &mut u32;
     let battle_state: &mut u32;
@@ -1366,8 +1573,6 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
         battle_state = &mut *m;
         state_sub_count = &mut *((w + 4) as *mut u32);
     }
-
-    REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
 
     match *(0x898688 as *const usize) {
         2 => handle_replay(

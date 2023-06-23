@@ -1,16 +1,16 @@
-#[cfg(any(NO))]
+#[cfg(feature = "logtofile")]
 use log::info;
 use std::{
     arch::asm,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::c_void,
 };
 
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
-    force_sound_skip, set_input_buffer, ISDEBUG, MEMORY_RECEIVER, SOKU_FRAMECOUNT,
-    SOUND_DELET_MUTEX, SOUND_MUTEX,
+    force_sound_skip, input_to_accum, set_input_buffer, ALLOCMUTEX, FREEMUTEX, ISDEBUG,
+    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_DELET_MUTEX, SOUND_MUTEX,
 };
 
 type RInput = [bool; 10];
@@ -133,10 +133,24 @@ impl Rollbacker {
 
             self.weathers
                 .insert(m.prev_state.number, m.prev_state.weather_sync_check);
-            //m.prev_state.did_happen(); here we should perform the frees that happen on a given frame, however this does not seem to work
+            m.prev_state.did_happen();
+            //let b = &mut *FREEMUTEX.lock().unwrap();
+            //for a in m.prev_state.frees {
+            //    b.insert(a);
+            //}
         }
 
         *SOUND_DELET_MUTEX.lock().unwrap() = newsound;
+
+        if self.current >= 10 {
+            crate::INPUTS_RAW.lock().unwrap().insert(
+                self.current - 10,
+                [
+                    input_to_accum(&self.enemy_inputs.get_result(self.current - 10).unwrap()),
+                    input_to_accum(&self.self_inputs[self.current - 10]),
+                ],
+            );
+        };
 
         self.rolling_back = false;
         self.guessed.len() + 1
@@ -157,7 +171,7 @@ impl Rollbacker {
 
     pub fn step(&mut self, iteration_number: usize) -> Option<()> {
         unsafe {
-            if self.guessed.len() > 0 && (self.rolling_back || iteration_number == 0) && false {
+            if self.guessed.len() > 0 && (self.rolling_back || iteration_number == 0) {
                 // this is how we were supposed to store the memory to be dealocated on-the-fly, but this also seems buggy
                 let last = if iteration_number == 0 {
                     self.guessed.len() - 1
@@ -165,11 +179,17 @@ impl Rollbacker {
                     iteration_number - 1
                 };
 
-                while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
+                let pstate = &mut self.guessed[last].prev_state;
+                while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
+                    pstate.frees.push(man);
+                }
+
+                while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
                     //a
-                    match man {
-                        MemoryManip::Alloc(pos) => self.guessed[last].prev_state.allocs.push(pos), /* */
-                        MemoryManip::Free(pos) => self.guessed[last].prev_state.frees.push(pos),
+                    if !pstate.frees.contains(&man) {
+                        pstate.allocs.push(man)
+                    } else {
+                        pstate.frees.retain(|x| *x != man);
                     }
                 }
             }
@@ -219,20 +239,14 @@ impl Rollbacker {
 
             if self.rolling_back {
                 unsafe {
-                    let mut frame = dump_frame();
-                    if false {
-                        unsafe {
-                            //this was another way of trying to handle the memory, that too failed
-                            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
-                                match man {
-                                    MemoryManip::Alloc(pos) => frame.allocs.push(pos),
-                                    MemoryManip::Free(pos) => frame.frees.push(pos),
-                                }
-                            }
-                        }
-                    }
+                    let frame = dump_frame();
 
-                    std::mem::replace(&mut fr.prev_state, frame)/* .never_happened()*/;
+                    let prev = std::mem::replace(&mut fr.prev_state, frame);
+                    prev.never_happened(); //this "variant" causes crashes
+                                           //let b = &mut *ALLOCMUTEX.lock().unwrap();
+                                           //for a in prev.allocs {
+                                           //    b.insert(a);
+                                           //}
                 };
                 fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
                 Self::apply_input(fr.player_input, fr.enemy_input);
@@ -241,6 +255,10 @@ impl Rollbacker {
                 //info!("ROLLBACK");
                 self.rolling_back = true;
                 fr.prev_state.clone().restore();
+                fr.prev_state.clone().never_happened();
+                fr.prev_state.frees.clear();
+                fr.prev_state.allocs.clear();
+
                 fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
                 Self::apply_input(fr.player_input, fr.enemy_input);
                 Some(())
@@ -261,16 +279,7 @@ pub struct RollFrame {
 
 impl RollFrame {
     fn dump_with_guess(player_input: RInput, guess: RInput) -> Self {
-        let mut prev_state = unsafe { dump_frame() };
-
-        unsafe {
-            while let Ok(man) = MEMORY_RECEIVER.as_ref().unwrap().try_recv() {
-                match man {
-                    MemoryManip::Alloc(pos) => prev_state.allocs.push(pos),
-                    MemoryManip::Free(pos) => prev_state.frees.push(pos),
-                }
-            }
-        }
+        let prev_state = unsafe { dump_frame() };
 
         Self {
             prev_state,
@@ -293,7 +302,7 @@ pub unsafe fn dump_frame() -> Frame {
 
     let mut m = vec![];
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("0x895ec")
     };
@@ -317,15 +326,15 @@ pub unsafe fn dump_frame() -> Frame {
     }
 
     {
-        let t = read_linked_list(first + 0x78, 0);
+        let t = read_linked_list(first + 0x78);
 
-        m.extend(t.read_all().to_vec().into_iter());
+        m.extend(t.read_all(0).to_vec().into_iter());
     }
 
     {
-        let t = read_linked_list(first + 0xa4, 0x180);
+        let t = read_linked_list(first + 0xa4);
 
-        m.extend(t.read_all().to_vec().into_iter());
+        m.extend(t.read_all(0x180).to_vec().into_iter());
     }
 
     {
@@ -336,7 +345,7 @@ pub unsafe fn dump_frame() -> Frame {
                 .into_iter(),
         );
     }
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     //0x8985e0
     if ISDEBUG {
         info!("0x8985e0")
@@ -346,13 +355,13 @@ pub unsafe fn dump_frame() -> Frame {
     m.push(read_addr(first, 0x118));
 
     m.extend(
-        read_linked_list(first + 0x4, 0)
-            .read_all()
+        read_linked_list(first + 0x4)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
-    let llautosize = read_linked_list(first + 0x2c, 0);
+    let llautosize = read_linked_list(first + 0x2c);
     m.push(llautosize.clone().to_addr());
     m.push(read_addr(first + 0x2c + 0xc, 4));
 
@@ -373,38 +382,48 @@ pub unsafe fn dump_frame() -> Frame {
     }
 
     m.extend(
-        read_linked_list(first + 0x38, 0)
-            .read_all()
+        read_linked_list(first + 0x38)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     //0x8985f0
     if ISDEBUG {
         info!("0x8985f0")
     };
-    let ptr1 = read_addr(0x8985f0, 0x4);
-    let first = get_ptr(&ptr1.content[0..4], 0);
+    //let ptr1 = read_addr(0x8985f0, 0x4);
+    //let first = get_ptr(&ptr1.content[0..4], 0);
+
+    let first = *(0x8985f0 as *const usize);
 
     m.push(read_addr(first, 0x94));
 
     m.push(read_vec(first + 0x10).read_underlying());
 
     m.push(read_vec(first + 0x20).read_underlying());
-
+    #[cfg(feature = "logtofile")]
+    if ISDEBUG {
+        info!("0x8985f02")
+    };
     m.extend(
-        read_linked_list(first + 0x30, 0)
-            .read_all()
+        read_linked_list(first + 0x30)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
-    let effect_linked_list = read_linked_list(first + 0x5c, 0x178).read_all().to_vec();
+    #[cfg(feature = "logtofile")]
+    if ISDEBUG {
+        info!("0x8985f03")
+    };
+
+    let effect_linked_list = read_linked_list(first + 0x5c).read_all(0x178).to_vec();
 
     m.extend(effect_linked_list.into_iter());
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     //0x8985e8
     if ISDEBUG {
         info!("0x8985e8")
@@ -420,8 +439,9 @@ pub unsafe fn dump_frame() -> Frame {
         let v3 = n[4];
 
         if read_from == 0 {
+            //println!("read_from is zero {:?}", n);
             if n[2] != 0 || n[3] != 0 || n[4] != 0 {
-                #[cfg(any(NO))]
+                #[cfg(feature = "logtofile")]
                 if ISDEBUG {
                     info!("read_from is zero {:?}", n)
                 };
@@ -430,7 +450,7 @@ pub unsafe fn dump_frame() -> Frame {
             m.push(read_addr(read_from, v1 * 4));
         }
         for a in 0..v3 {
-            let addr = read_from + ((a + v2) % v1) * 4;
+            let addr = *((read_from + ((a + v2) % v1) * 4) as *const usize);
 
             m.push(read_addr(addr, size));
         }
@@ -445,15 +465,15 @@ pub unsafe fn dump_frame() -> Frame {
     m.push(read_vec(first + 0x24).read_underlying());
 
     m.extend(
-        read_linked_list(first + 0x34, 0)
-            .read_all()
+        read_linked_list(first + 0x34)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
     m.extend(
-        read_linked_list(first + 0x60, 0x178)
-            .read_all()
+        read_linked_list(first + 0x60)
+            .read_all(0x178)
             .to_vec()
             .into_iter(),
     );
@@ -461,7 +481,7 @@ pub unsafe fn dump_frame() -> Frame {
     read_weird_structure(&mut m, first + 0x18c, 0xc);
     read_weird_structure(&mut m, first + 0x1c0, 0xc);
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     //0x8985e4
     if ISDEBUG {
         info!("0x8985e4")
@@ -471,38 +491,38 @@ pub unsafe fn dump_frame() -> Frame {
     let first = get_ptr(&ptr1.content[0..4], 0);
     m.push(read_addr(first, 0x908));
     m.extend(
-        read_linked_list(first + 0x30, 0)
-            .read_all()
+        read_linked_list(first + 0x30)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
     m.extend(
-        read_linked_list(first + 0x3c, 0)
-            .read_all()
+        read_linked_list(first + 0x3c)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
     m.extend(
-        read_linked_list(first + 0x48, 0)
-            .read_all()
+        read_linked_list(first + 0x48)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
     m.extend(
-        read_linked_list(first + 0x54, 0)
-            .read_all()
+        read_linked_list(first + 0x54)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
     m.extend(
-        read_linked_list(first + 0x60, 0)
-            .read_all()
+        read_linked_list(first + 0x60)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
     m.extend(
-        read_linked_list(first + 0x6c, 0)
-            .read_all()
+        read_linked_list(first + 0x6c)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
@@ -511,35 +531,35 @@ pub unsafe fn dump_frame() -> Frame {
         let w = read_vec(first + 0x9c);
         if w.start != 0 {
             m.push(w.read_underlying());
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             info!("battle+x9c wasn't 0");
         }
         let w = read_vec(first + 0xac);
 
         if w.start != 0 {
             m.push(w.read_underlying());
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             //seems to have never triggered, same as the one above
             info!("battle+xac wasn't 0");
         }
     }
     m.extend(
-        read_linked_list(first + 0xbc, 0)
-            .read_all()
+        read_linked_list(first + 0xbc)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
     m.extend(
-        read_linked_list(first + 0xe8, 0)
-            .read_all()
+        read_linked_list(first + 0xe8)
+            .read_all(0)
             .to_vec()
             .into_iter(),
     );
 
     //0x8985dc
     if ISDEBUG {
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         info!("0x8985dc")
     };
 
@@ -550,7 +570,7 @@ pub unsafe fn dump_frame() -> Frame {
     m.push(read_vec(first + 0x40).read_underlying());
 
     //0x8986a0
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("0x8986a0")
     };
@@ -565,16 +585,16 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(read_addr(first + 0x174, 0x68));
     }
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("0x8985e4")
     };
 
     let read_character_data = |p: usize, offset: usize, m: &mut Vec<_>| {
         let read_bullets = |pos: usize, char: u8, m: &mut Vec<_>| {
-            let list = read_linked_list(pos, 0);
+            let list = read_linked_list(pos);
 
-            m.extend(list.clone().read_all().to_vec().into_iter());
+            m.extend(list.clone().read_all(0).to_vec().into_iter());
 
             let und = list.read_underlying();
 
@@ -588,22 +608,22 @@ pub unsafe fn dump_frame() -> Frame {
                     let p1 = get_ptr(&bullet.content, 0x3a4);
 
                     if p1 != 0 {
-                        let ll = read_linked_list(d + 0x3a4, 0);
+                        let ll = read_linked_list(d + 0x3a4);
 
-                        m.extend(ll.read_all().to_vec().into_iter());
+                        m.extend(ll.read_all(0).to_vec().into_iter());
                     }
 
                     let p1 = get_ptr(&bullet.content, 0x17c);
                     if p1 != 0 {
-                        let ll = read_linked_list(d + 0x17c, 0);
-                        m.extend(ll.read_all().to_vec().into_iter());
+                        let ll = read_linked_list(d + 0x17c);
+                        m.extend(ll.read_all(0).to_vec().into_iter());
                     }
 
                     let p3 = get_ptr(&bullet.content, 0x35c);
                     if p3 != 0 {
                         let s = read_heap(p3);
                         if s > 4000 {
-                            #[cfg(any(NO))]
+                            #[cfg(feature = "logtofile")]
                             {
                                 info!("bullet data too big! {}", s)
                             }
@@ -672,7 +692,7 @@ pub unsafe fn dump_frame() -> Frame {
         }
 
         let mut z = vec![];
-        let ll = read_linked_list(old + 0x718, 0x0);
+        let ll = read_linked_list(old + 0x718);
 
         z.push(read_addr(ll.ll4, 0xf4));
 
@@ -713,8 +733,8 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(p5.read_underlying());
         m.push(p5.to_addr());
 
-        let p6 = read_linked_list(new + 0x30, 0);
-        m.extend(p6.read_all().to_vec().into_iter());
+        let p6 = read_linked_list(new + 0x30);
+        m.extend(p6.read_all(0).to_vec().into_iter());
 
         read_bullets(new + 0x5c, char, m);
 
@@ -739,7 +759,7 @@ pub unsafe fn dump_frame() -> Frame {
 
     read_character_data(p3, 1, &mut m);
 
-    #[cfg(any(NO))]
+    #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("bullets done");
     }
@@ -754,7 +774,7 @@ pub unsafe fn dump_frame() -> Frame {
         let sc2 = read_maybe_ring_buffer(sc1 + 0x3c);
         let z = sc2.obj_s as i32;
 
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         if ISDEBUG {
             info!("weird deque done");
         }
@@ -887,7 +907,6 @@ impl LL4 {
 struct LL3Holder {
     pub pos: usize,
     pub ll4: usize,
-    pub additional_size: usize,
     pub listcount: usize,
     pub add_data: usize,
 }
@@ -895,7 +914,7 @@ struct LL3Holder {
 impl LL3Holder {
     fn read_underlying(&self) -> Box<[LL4]> {
         if self.ll4 == 0 {
-            #[cfg(any(NO))]
+            #[cfg(feature = "logtofile")]
             info!("ll4 is 0 ,painc");
             panic!("ll4 is 0");
         }
@@ -910,12 +929,12 @@ impl LL3Holder {
             let last = b.last().unwrap();
             let next = last.next;
             if next == 0 {
-                #[cfg(any(NO))]
-                info!(
-                    "next was equal to zero, pos {}, out of {}",
-                    a,
-                    self.listcount - 1
-                );
+                //#[cfg(feature = "logtofile")]
+                //info!(
+                //    "next was equal to zero, pos {}, out of {}",
+                //    a,
+                //    self.listcount - 1
+                //);
                 panic!();
             };
             b.push(read_ll4(next));
@@ -924,18 +943,19 @@ impl LL3Holder {
         b.into_boxed_slice()
     }
 
-    fn read_all(self) -> Box<[ReadAddr]> {
+    fn read_all(self, additional_size: usize) -> Box<[ReadAddr]> {
         //I think that readLL3 does not read itself, however, I will leave this here because it cannot hurt
 
         if self.listcount == 0 {
-            Box::new([read_ll4(self.ll4).to_addr()])
+            Box::new([read_ll4(self.ll4).to_addr(), self.to_addr()])
         } else {
-            let size = self.additional_size;
+            let size = additional_size;
             if size == 0 {
                 self.read_underlying()
                     .to_vec()
                     .into_iter()
                     .map(|x| x.to_addr())
+                    .chain([self.to_addr()].into_iter())
                     .collect()
             } else {
                 let mut uv = self.read_underlying().to_vec();
@@ -953,6 +973,7 @@ impl LL3Holder {
                     })
                     .flatten()
                     .chain([first.to_addr()].into_iter())
+                    .chain([self.to_addr()].into_iter())
                     .collect()
             }
         }
@@ -1020,16 +1041,16 @@ impl Deque {
     }
 
     fn read_underlying(&self, size: usize) -> Box<[ReadAddr]> {
-        let wobbest: ReadAddr = read_addr(self.data, self.size * 4);
+        let unknown: ReadAddr = read_addr(self.data, self.size * 4);
 
-        wobbest
+        unknown
             .content
             .clone()
             .chunks(4)
             .map(|x| usize::from_le_bytes(x.try_into().unwrap()))
             .filter(|x| *x != 0)
             .map(|x| read_addr(x, size))
-            .chain([wobbest].into_iter())
+            .chain([unknown].into_iter())
             .collect()
     }
 
@@ -1048,7 +1069,7 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
         panic!("size too big {}", size);
     }
     if pos == 0 || size == 0 {
-        #[cfg(any(NO))]
+        #[cfg(feature = "logtofile")]
         if ISDEBUG {
             info!("unchecked 0 addr read")
         };
@@ -1057,26 +1078,7 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
             content: Box::new([]),
         };
     }
-    #[cfg(any(NO))]
-    if false {
-        //info!("here2 {} {}", pos, unsafe { *(0x89b404 as *const usize) });
 
-        unsafe {
-            if HeapValidate(
-                *(0x89b404 as *const HeapHandle),
-                windows::Win32::System::Memory::HEAP_FLAGS(0),
-                Some(pos as *const c_void),
-            )
-            .into()
-            {
-                let m = read_heap(pos);
-                //info!("here1 {}", pos);
-                if m != size && m != usize::MAX && m != 940 && m != 944 {
-                    info!("values unequal, {} {}", m, size);
-                }
-            }
-        }
-    }
     let ptr = pos as *const u8;
     ReadAddr {
         pos: pos,
@@ -1096,12 +1098,12 @@ fn read_vec(pos: usize) -> VecAddr {
     }
 }
 #[must_use]
-fn read_linked_list(pos: usize, add_size: usize) -> LL3Holder {
+fn read_linked_list(pos: usize) -> LL3Holder {
     let w = read_addr(pos, 12);
 
     LL3Holder {
         pos: pos,
-        additional_size: add_size,
+
         ll4: usize::from_le_bytes(w.content[0..4].try_into().unwrap()),
         listcount: usize::from_le_bytes(w.content[4..8].try_into().unwrap()),
         add_data: usize::from_le_bytes(w.content[8..12].try_into().unwrap()),
@@ -1155,19 +1157,32 @@ pub struct Frame {
 
 impl Frame {
     pub fn never_happened(self) {
+        let allocs: BTreeSet<_> = self.allocs.iter().collect();
+        let frees: BTreeSet<_> = self.frees.iter().collect();
+
         let heap = unsafe { *(0x89b404 as *const isize) };
 
-        for a in self.allocs {
-            #[cfg(any(NO))]
+        for a in allocs.intersection(&frees) {
+            #[cfg(feature = "logtofile")]
             if ISDEBUG {
                 info!("alloc: {}", a)
             };
 
-            unsafe { HeapFree(heap, 0, a as *const c_void) };
+            unsafe { HeapFree(heap, 0, (**a) as *const c_void) };
+        }
+
+        for a in allocs.difference(&frees) {
+            //println!("never freed: {}", a);
         }
     }
 
     pub fn did_happen(self) {
+        let m = &mut *ALLOCMUTEX.lock().unwrap();
+
+        for a in self.frees.iter() {
+            m.remove(a);
+        }
+
         for a in self.frees {
             let heap = unsafe { *(0x89b404 as *const isize) };
             if a != 0 {
@@ -1211,3 +1226,223 @@ impl Frame {
         }
     }
 }
+
+/*
+
+unsafe fn deasm() {
+    asm!(
+        "PUSH       EBX",
+        "PUSH       ESI",
+        "MOV        ESI,param_1",
+        "PUSH       EDI",
+        "MOV        EBX,ESI",
+        "CALL       FUN_100027d0",
+        "MOV        EDI,0x6c",
+        "MOV        ECX,0x898600",
+        "CALL       readGameData",
+        "MOV        EDI,0x4",
+        "MOV        ECX=>Framecount2,0x8985d8",
+        "CALL       readGameData",
+        "MOV        ECX,0x8985d4",
+        "CALL       readGameData",
+        "MOV        EDI,0x20",
+        "MOV        ECX,0x8971b8",
+        "CALL       readGameData",
+        "MOV        EDI,0x4",
+        "MOV        ECX,0x883cc8",
+        "CALL       readGameData",
+        "MOV        ECX=>DAT_0089a88c,0x89a88c",
+        "CALL       readGameData",
+        "MOV        ECX,0x89a454",
+        "CALL       readGameData",
+        "MOV        EDI,0x8",
+        "MOV        ECX,0x896d64",
+        "CALL       readGameData",
+        "MOV        EDI,0x4",
+        "MOV        ECX=>DAT_00896b20,0x896b20",
+        "CALL       readGameData",
+        "MOV        ECX,0x89b65c",
+        "CALL       readGameData",
+        "MOV        EDI,0x9c0",
+        "MOV        ECX,0x89b660",
+        "CALL       readGameData",
+        "MOV        EDI,0x4",
+        "MOV        ECX,0x89c01c",
+        "CALL       readGameData",
+        "MOV        ECX,0x89aaf8",
+        "CALL       readGameData",
+        "MOV        ECX,0x88526c",
+        "CALL       readGameData",
+        "MOV        EDI,0x14",
+        "MOV        ECX,0x8971c0",
+        "CALL       readGameData",
+        "MOV        ECX,dword ptr [DAT_008971c8]",
+        "MOV        EDI,0x4c",
+        "CALL       readGameData",
+        "MOV        EBX,dword ptr [DAT_008985ec]",
+        "MOV        EDI,0xec",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "LEA        param_1,[EBX + 0x1c]",
+        "CALL       store_autosize",
+        "LEA        param_1,[EBX + 0x68]",
+        "CALL       store_autosize",
+        "PUSH       0x0",
+        "LEA        param_1,[EBX + 0x78]",
+        "PUSH       param_1",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x180",
+        "LEA        ECX,[EBX + 0xa4]",
+        "PUSH       ECX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "LEA        param_1,[EBX + 0x28]",
+        "MOV        ECX,ESI",
+        "CALL       ReadWeirderLinkedList",
+        "MOV        EBX,dword ptr [DAT_008985e0]",
+        "MOV        EDI,0x118",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "PUSH       0x0",
+        "LEA        EDX,[EBX + 0x4]",
+        "PUSH       EDX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "LEA        param_1,[EBX + 0x2c]",
+        "PUSH       param_1",
+        "PUSH       ESI",
+        "CALL       ReadSizeDetect",
+        "ADD        ESP,0x8",
+        "PUSH       0x0",
+        "ADD        EBX,0x38",
+        "PUSH       EBX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "MOV        EBX,dword ptr [DAT_008985f0]",
+        "MOV        EDI,0x94",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "LEA        param_1,[EBX + 0x10]",
+        "CALL       store_autosize",
+        "LEA        param_1,[EBX + 0x20]",
+        "CALL       store_autosize",
+        "PUSH       0x0",
+        "LEA        ECX,[EBX + 0x30]",
+        "PUSH       ECX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x178",
+        "ADD        EBX,0x5c",
+        "PUSH       EBX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "MOV        EBX,dword ptr [DAT_008985e8]",
+        "MOV        EDI,0x688",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "LEA        param_1,[EBX + 0x14]",
+        "CALL       store_autosize",
+        "LEA        param_1,[EBX + 0x24]",
+        "CALL       store_autosize",
+        "PUSH       0x0",
+        "LEA        EDX,[EBX + 0x34]",
+        "PUSH       EDX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x178",
+        "LEA        param_1,[EBX + 0x60]",
+        "PUSH       param_1",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "LEA        param_1,[EBX + 0x18c]",
+        "MOV        ECX,ESI",
+        "CALL       ReadLinkedListWrappingBig",
+        "LEA        param_1,[EBX + 0x1c0]",
+        "MOV        ECX,ESI",
+        "CALL       ReadLinkedListWrappingBig",
+        "MOV        EBX,dword ptr [DAT_008985e4]",
+        "MOV        EDI,0x908",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "PUSH       0x0",
+        "LEA        ECX,[EBX + 0x30]",
+        "PUSH       ECX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "LEA        EDX,[EBX + 0x3c]",
+        "PUSH       EDX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "LEA        param_1,[EBX + 0x48]",
+        "PUSH       param_1",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "LEA        ECX,[EBX + 0x54]",
+        "PUSH       ECX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "LEA        EDX,[EBX + 0x60]",
+        "PUSH       EDX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "LEA        param_1,[EBX + 0x6c]",
+        "PUSH       param_1",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "LEA        param_1,[EBX + 0x9c]",
+        "CALL       store_autosize",
+        "LEA        param_1,[EBX + 0xac]",
+        "CALL       store_autosize",
+        "PUSH       0x0",
+        "LEA        ECX,[EBX + 0xbc]",
+        "PUSH       ECX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "PUSH       0x0",
+        "ADD        EBX,0xe8",
+        "PUSH       EBX",
+        "MOV        param_1,ESI",
+        "CALL       readLL3",
+        "MOV        EBX,dword ptr [DAT_008985dc]",
+        "MOV        EDI,0x58",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "LEA        param_1,[EBX + 0x40]",
+        "CALL       store_autosize",
+        "XOR        ECX,ECX",
+        "MOV        param_1,ESI",
+        "CALL       FUN_100180f0",
+        "LEA        ECX,[EDI + -0x57]",
+        "MOV        param_1,ESI",
+        "CALL       FUN_100180f0",
+        "MOV        EDX,dword ptr [Mutex1]",
+        "MOV        EBX,dword ptr [DAT_008986a0]",
+        "PUSH       -0x1",
+        "LEA        ECX,[EBX + 0xf8]",
+        "MOV        EDI,0x68",
+        "CALL       readGameData",
+        "LEA        ECX,[EBX + 0x174]",
+        "CALL       readGameData",
+        "MOV        EBX,dword ptr [DAT_0089881c]",
+        "MOV        EDI,0x128",
+        "MOV        ECX,0x898718",
+        "CALL       readGameData",
+        "MOV        EDI,0x50",
+        "MOV        ECX,EBX",
+        "CALL       readGameData",
+        "LEA        param_1,[EBX + 0x3c]",
+        "PUSH       ESI",
+        "CALL       FUN_100026f0",
+        "POP        EDI",
+        "POP        ESI",
+        "POP        EBX",
+        "RET",
+    )
+}
+ */

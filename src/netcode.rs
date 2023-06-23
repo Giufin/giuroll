@@ -1,4 +1,4 @@
-#[cfg(any(NO))]
+#[cfg(feature = "logtofile")]
 use log::info;
 use std::{
     collections::HashSet,
@@ -7,7 +7,7 @@ use std::{
 };
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
-use crate::{input_to_accum, rollback::Rollbacker, TARGET_OFFSET};
+use crate::{input_to_accum, rollback::Rollbacker, TARGET_OFFSET, INPUTS_RAW};
 
 #[derive(Clone, Debug)]
 pub struct NetworkPacket {
@@ -282,7 +282,7 @@ impl Netcoder {
                     .unwrap_or(0);
                 if weather_remote != weather_local {
                     //todo, add different desync indication !
-                    #[cfg(any(NO))]
+                    #[cfg(feature = "logtofile")]
                     info!(
                         "DESYNC: local: {}, remote: {}",
                         weather_local, weather_remote
@@ -324,10 +324,11 @@ impl Netcoder {
 
         let input_head = self.id + self.delay;
 
-        let input_range = self.id.saturating_sub(self.max_rollback + self.delay)..=input_head;
+        let input_range = self.id.saturating_sub(self.max_rollback + self.delay + 1)..=input_head;
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
+            
             rollbacker.self_inputs.push(current_input);
         }
 
@@ -429,7 +430,7 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
     if rse == -1 {
         //to do, change error handling for sockets
         
-        #[cfg(any(NO))]
-        info!("socket err: {:?}", WSAGetLastError());
+        //#[cfg(feature = "logtofile")]
+        //info!("socket err: {:?}", WSAGetLastError());
     }
 }
