@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [features]
 logtofile = []
-
+allocconsole = []
 
 [dependencies.windows]
 version = "0.48"

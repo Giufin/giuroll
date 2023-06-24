@@ -262,11 +262,11 @@ fn truer_exec(filename: Option<PathBuf>) {
         LAST_DELAY_VALUE = 1;
     }
 
-    // /*
+    #[cfg(feature = "allocconsole")]
     unsafe {
         AllocConsole();
     }
-    // */
+    
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     unsafe {
