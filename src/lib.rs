@@ -234,9 +234,11 @@ static SOUND_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::ne
 static SOUND_DELET_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
 
 static mut FORCE_SOUND_SKIP: bool = false;
-
 //this is getting bad, fix the redundancy
 static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new());
+
+static mut SPECTATOR_LAST_FRAMECOUNT: u32 = 0;
+static mut SPECTATOR_NEXT_INPUT: u16 = 0;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -262,7 +264,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     // /*
     unsafe {
-        //AllocConsole();
+        AllocConsole();
     }
     // */
     #[cfg(feature = "logtofile")]
@@ -543,13 +545,13 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
         REQUESTED_THREAD_ID.store(0, Relaxed);
-        
+
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
         BATTLE_STARTED = false;
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
-        
+
         SOUND_MUTEX.lock().unwrap().clear();
         SOUND_DELET_MUTEX.lock().unwrap().clear();
 
@@ -636,11 +638,13 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     // changes the check in spectators so that packets are only sent if there is more than N of them in the buffer, to avoid sending incorrect inputs
     // N was initially 10, but it would desync on round end (one thing to look at is the fact that replays always start to stutter at round end)
+    /*
     unsafe extern "cdecl" fn maybe_spectator(
         a: *mut ilhook::x86::Registers,
         _b: usize,
         _c: usize,
     ) -> usize {
+        println!("edi: {}", (*a).edi);
         if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 40 {
             //
             0x4545a7
@@ -656,23 +660,18 @@ fn truer_exec(filename: Option<PathBuf>) {
     };
     std::mem::forget(new);
 
-    unsafe extern "cdecl" fn spectator_report(
-        a: *mut ilhook::x86::Registers,
-        _b: usize,
-      
-    )  {
+    unsafe extern "cdecl" fn spectator_report(a: *mut ilhook::x86::Registers, _b: usize) {
         let eax = (*a).eax;
         let ptr = eax as *mut u16;
 
         let frame = (*a).esi / 2 + 1;
         let player = (*a).esi & 1;
-        
 
         let mine = INPUTS_RAW.lock().unwrap().get(&(frame as usize)).unwrap()[player as usize];
         let old = *ptr;
         *ptr = mine;
 
-        println!("addr: {}, their input: {}, mine input: {}, frame: {}", eax, old, mine, (*a).esi);
+        //println!("addr: {}, their input: {}, mine input: {}, frame: {}, ptr: {}", eax, old, mine, (*a).esi, (*a).ecx);
     }
 
     // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
@@ -680,7 +679,85 @@ fn truer_exec(filename: Option<PathBuf>) {
         ilhook::x86::Hooker::new(0x45458b, HookType::JmpBack(spectator_report), 0).hook(5)
     };
     std::mem::forget(new);
+    */
+    unsafe extern "cdecl" fn spectator_skip(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        
+        let framecount_cur = *(((*a).esi + 0x4c) as *const u32);
+        let edi = (*a).edi;
+        SPECTATOR_LAST_FRAMECOUNT = edi;
+        //println!("edi: {}, framecount: {}", edi, framecount_cur); 
+        let no_skip = edi + 100 < framecount_cur && BATTLE_STARTED;
+        if no_skip {
+            /*
+            LAB_0042daa6                                    XREF[1]:     0042daa0(j)
+            0042daa6 8b 5e 48        MOV        EBX,dword ptr [ESI + 0x48]
+            0042daa9 8b 4e 4c        MOV        ECX,dword ptr [ESI + 0x4c]
+            */
 
+            (*a).ebx = *(((*a).esi + 0x48) as *const u32);
+            (*a).ecx = framecount_cur;
+            
+            0x42daac
+        } else {
+            //println!("here 3");
+            /*
+            0042db1d 8b 5c 24 1c     MOV        EBX,dword ptr [ESP + local_10]
+             */
+            (*a).ebx = *(((*a).esp + 0x1c) as *const u32);
+            0x42db21
+        }
+    }
+
+    // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x42daa6, HookType::JmpToRet(spectator_skip), 0).hook(6)
+    };
+    std::mem::forget(new);
+
+    unsafe extern "cdecl" fn spectator_override(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+        _c: usize,
+    ) {
+        /*
+        0042daf6 8b 4c 24 30     MOV        ECX,dword ptr [ESP + param_1]
+        0042dafa 8d 04 6a        LEA        EAX,[EDX + EBP*0x2]
+        */
+        println!("here 4");
+        (*a).ecx = *(((*a).esp + 0x30) as *const u32);
+        (*a).eax = (*a).edx + (*a).ebp * 2;
+
+        let input_ptr_ptr = (*a).eax as *mut u16;
+
+        let fc = SPECTATOR_LAST_FRAMECOUNT / 2;
+        let pl = SPECTATOR_LAST_FRAMECOUNT & 1;
+
+        let mine = INPUTS_RAW.lock().unwrap().get(&(fc as usize + 50)).unwrap()[pl as usize];
+        println!("their input: {}, my input: {:?}", *input_ptr_ptr, mine);
+        //std::thread::sleep(Duration::from_secs(1));
+        SPECTATOR_NEXT_INPUT = mine;
+        (*a).eax = &mut SPECTATOR_NEXT_INPUT as *mut u16 as u32;
+        println!("here 5");
+        //*input_ptr_ptr = mine;
+        //let input_ptr = (*input_ptr_ptr) as *const u16;
+    }
+    
+    /*
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x42daf6,
+            HookType::JmpToAddr(0x42daf6 + 7, 0, spectator_override),
+            0,
+        )
+        .hook(7)
+    };
+    std::mem::forget(new);
+    */
+ 
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
@@ -1011,11 +1088,10 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
 
     //if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
     if
-    /* !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
-    || */
+    /* !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) || */
     *(0x89b404 as *const usize) != *heap
-    /* || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
-    || *SOKU_FRAMECOUNT == 0 */
+        || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
+        || *SOKU_FRAMECOUNT == 0
     {
         HeapFree((*heap) as isize, *flags as u32, *s as *const c_void);
         return;
@@ -1085,18 +1161,19 @@ unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b:
     (*a).eax = HeapAlloc(heap, flags, s) as u32;
 
     if *(0x89b404 as *const usize) != heap as usize
-        || !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
-        || *SOKU_FRAMECOUNT == 0
+        /*|| !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)*/
+        || *SOKU_FRAMECOUNT == 0 ||
+        GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
     {
         //println!("wrong heap alloc");
-    } else if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
+    } else {
         store_alloc((*a).eax as usize);
     }
 }
 
 unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
     if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed)
-        && matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)
+        /* && matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) */
         && *SOKU_FRAMECOUNT != 0
     {
         store_alloc((*a).esi as usize);

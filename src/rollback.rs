@@ -186,11 +186,11 @@ impl Rollbacker {
 
                 while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
                     //a
-                    if !pstate.frees.contains(&man) {
-                        pstate.allocs.push(man)
-                    } else {
-                        pstate.frees.retain(|x| *x != man);
-                    }
+                    pstate.allocs.push(man);
+                    //if !pstate.frees.contains(&man) {
+                    //} else {
+                    //    pstate.frees.retain(|x| *x != man);
+                    //}
                 }
             }
         }
@@ -242,11 +242,11 @@ impl Rollbacker {
                     let frame = dump_frame();
 
                     let prev = std::mem::replace(&mut fr.prev_state, frame);
-                    prev.never_happened(); //this "variant" causes crashes
-                                           //let b = &mut *ALLOCMUTEX.lock().unwrap();
-                                           //for a in prev.allocs {
-                                           //    b.insert(a);
-                                           //}
+                    //prev.never_happened(); //this "variant" causes crashes
+                    //let b = &mut *ALLOCMUTEX.lock().unwrap();
+                    //for a in prev.allocs {
+                    //    b.insert(a);
+                    //}
                 };
                 fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
                 Self::apply_input(fr.player_input, fr.enemy_input);
@@ -255,7 +255,7 @@ impl Rollbacker {
                 //info!("ROLLBACK");
                 self.rolling_back = true;
                 fr.prev_state.clone().restore();
-                fr.prev_state.clone().never_happened();
+                //fr.prev_state.clone().never_happened();
                 fr.prev_state.frees.clear();
                 fr.prev_state.allocs.clear();
 
@@ -1177,11 +1177,11 @@ impl Frame {
     }
 
     pub fn did_happen(self) {
-        let m = &mut *ALLOCMUTEX.lock().unwrap();
-
-        for a in self.frees.iter() {
-            m.remove(a);
-        }
+        //let m = &mut *ALLOCMUTEX.lock().unwrap();
+        //
+        //for a in self.frees.iter() {
+        //    m.remove(a);
+        //}
 
         for a in self.frees {
             let heap = unsafe { *(0x89b404 as *const isize) };
