@@ -224,7 +224,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll whatever :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.3.1 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -266,7 +266,7 @@ fn truer_exec(filename: Option<PathBuf>) {
     unsafe {
         AllocConsole();
     }
-    
+
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     unsafe {
@@ -685,11 +685,10 @@ fn truer_exec(filename: Option<PathBuf>) {
         _b: usize,
         _c: usize,
     ) -> usize {
-        
         let framecount_cur = *(((*a).esi + 0x4c) as *const u32);
         let edi = (*a).edi;
         SPECTATOR_LAST_FRAMECOUNT = edi;
-        //println!("edi: {}, framecount: {}", edi, framecount_cur); 
+        //println!("edi: {}, framecount: {}", edi, framecount_cur);
         let no_skip = edi + 100 < framecount_cur && BATTLE_STARTED;
         if no_skip {
             /*
@@ -700,7 +699,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 
             (*a).ebx = *(((*a).esi + 0x48) as *const u32);
             (*a).ecx = framecount_cur;
-            
+
             0x42daac
         } else {
             //println!("here 3");
@@ -745,7 +744,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //*input_ptr_ptr = mine;
         //let input_ptr = (*input_ptr_ptr) as *const u16;
     }
-    
+
     /*
     let new = unsafe {
         ilhook::x86::Hooker::new(
@@ -757,7 +756,6 @@ fn truer_exec(filename: Option<PathBuf>) {
     };
     std::mem::forget(new);
     */
- 
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
@@ -958,6 +956,7 @@ fn truer_exec(filename: Option<PathBuf>) {
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn timing_loop(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+        const TARGET_FRAMETIME: i32 = 1_000_000 / 60;
         let waithandle = (*a).esi; //should I even use this? :/
         let (m, target) = match UPDATE {
             Some(x) => (x, TARGET.as_mut().unwrap()),
@@ -975,20 +974,20 @@ fn truer_exec(filename: Option<PathBuf>) {
 
         let s = TARGET_OFFSET.swap(0, Relaxed);
         //TARGET_OFFSET.fetch_add(s / 2, Relaxed);
-        *target += ((1_000_000 / 60) + s).max(1005) as u128;
+        *target += (TARGET_FRAMETIME + s).max(1005) as u128;
 
         let cur = m.elapsed().unwrap().as_micros();
         let diff = *target as i128 - cur as i128; // - 1000; //spinning
-        if diff > 1_000_000 {
-            panic!("big diff {diff}");
-        }
+                                                  //if diff > 1_000_000 {
+                                                  //    panic!("big diff {diff}");
+                                                  //}
 
         //info!("frame diff micro diff: {}", diff);
         let ddiff = (diff / 1000) as i32;
         let ddiff = if ddiff < 0 {
             #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
-            *target = cur + (1_000_000 / 60) as u128;
+            *target = cur + (TARGET_FRAMETIME) as u128;
             3
         } else {
             ddiff
@@ -1203,7 +1202,7 @@ fn resume(battle_state: &mut u32) {
         LAST_STATE.store(0x69, Relaxed)
     }
 }
-
+//        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
 static PAUSESTATE: AtomicU8 = AtomicU8::new(0);
 
 unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) {
@@ -1625,6 +1624,7 @@ unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize
 }
 
 unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
+    //println!("GAMETYPE TRUE {}", *(0x8986a0 as *const usize));
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     //REQUESTED_THREAD_ID.store(0, Relaxed);
@@ -1650,16 +1650,20 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
         battle_state = &mut *m;
         state_sub_count = &mut *((w + 4) as *mut u32);
     }
+    let gametype_main = *(0x898688 as *const usize);
+    let is_netplay = *(0x8986a0 as *const usize) != 0;
 
-    match *(0x898688 as *const usize) {
-        2 => handle_replay(
+    //println!("{:?}", (gametype_main, is_netplay));
+
+    match (gametype_main, is_netplay) {
+        (2, false) if false => handle_replay(
             framecount,
             battle_state,
             cur_speed,
             cur_speed_iter,
             state_sub_count,
         ), //2 is replay
-        1 => {
+        (1, true) => {
             // 1 is netplay and v player
             // todo: detect v player
 
