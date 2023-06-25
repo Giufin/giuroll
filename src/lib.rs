@@ -224,7 +224,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.3.1 :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.3.3 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -444,6 +444,17 @@ fn truer_exec(filename: Option<PathBuf>) {
 
                *(funnyaddr as *mut u32) = 0x000108E9;
         */
+    }
+
+    //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
+    unsafe {
+        let mut previous = PAGE_PROTECTION_FLAGS(0);
+        VirtualProtect(0x724316 as *const c_void, 4, PAGE_PROTECTION_FLAGS(0x40), &mut previous);
+        *(0x724316 as *mut u8) = 0x66;
+        *(0x724317 as *mut u8) = 0xB9;
+        *(0x724318 as *mut u8) = 0x0F;
+        *(0x724319 as *mut u8) = 0x00;
+        VirtualProtect(0x724316 as *const c_void, 4, previous, &mut previous);
     }
 
     let new = unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(goodhook), 0).hook(6) };

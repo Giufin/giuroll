@@ -324,7 +324,7 @@ impl Netcoder {
 
         let input_head = self.id + self.delay;
 
-        let input_range = self.id.saturating_sub(self.max_rollback + self.delay + 1)..=input_head;
+        let input_range = self.id.saturating_sub(self.max_rollback * 2 + self.delay + 1)..=input_head;
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
