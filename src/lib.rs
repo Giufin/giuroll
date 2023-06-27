@@ -224,7 +224,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.3.3 :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.4.0 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
