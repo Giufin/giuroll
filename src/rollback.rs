@@ -209,7 +209,7 @@ impl Rollbacker {
                     .flatten()
                     .collect::<HashSet<_>>();
 
-                for idx in (self.current).saturating_sub(5)..=(self.current) {
+                for idx in (self.current).saturating_sub(8)..=(self.current) {
                     if !new_sounds.contains_key(&idx) {
                         continue;
                     }

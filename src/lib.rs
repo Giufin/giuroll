@@ -278,7 +278,13 @@ fn truer_exec(filename: Option<PathBuf>) {
             &mut b,
         );
 
-        *(0x858b80 as *mut u8) = 0x69;
+        #[cfg(not(feature = "f62"))] {
+            *(0x858b80 as *mut u8) = 0x69;
+        }
+
+        #[cfg(feature = "f62")] {
+            *(0x858b80 as *mut u8) = 0x6a;
+        }
     }
 
     unsafe {
@@ -449,7 +455,12 @@ fn truer_exec(filename: Option<PathBuf>) {
     //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
     unsafe {
         let mut previous = PAGE_PROTECTION_FLAGS(0);
-        VirtualProtect(0x724316 as *const c_void, 4, PAGE_PROTECTION_FLAGS(0x40), &mut previous);
+        VirtualProtect(
+            0x724316 as *const c_void,
+            4,
+            PAGE_PROTECTION_FLAGS(0x40),
+            &mut previous,
+        );
         *(0x724316 as *mut u8) = 0x66;
         *(0x724317 as *mut u8) = 0xB9;
         *(0x724318 as *mut u8) = 0x0F;
@@ -967,7 +978,11 @@ fn truer_exec(filename: Option<PathBuf>) {
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn timing_loop(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+        #[cfg(feature = "f62")]
+        const TARGET_FRAMETIME: i32 = 1_000_000 / 62;
+        #[cfg(not(feature = "f62"))]
         const TARGET_FRAMETIME: i32 = 1_000_000 / 60;
+
         let waithandle = (*a).esi; //should I even use this? :/
         let (m, target) = match UPDATE {
             Some(x) => (x, TARGET.as_mut().unwrap()),
@@ -1641,9 +1656,6 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
     //REQUESTED_THREAD_ID.store(0, Relaxed);
 
     let framecount = *SOKU_FRAMECOUNT;
-    if framecount > 5 {
-        REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
-    }
 
     read_current_input();
 
@@ -1667,16 +1679,25 @@ unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
     //println!("{:?}", (gametype_main, is_netplay));
 
     match (gametype_main, is_netplay) {
-        (2, false) if false => handle_replay(
-            framecount,
-            battle_state,
-            cur_speed,
-            cur_speed_iter,
-            state_sub_count,
-        ), //2 is replay
+        (2, false) => {
+            if framecount > 5 {
+                REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
+            }
+
+            handle_replay(
+                framecount,
+                battle_state,
+                cur_speed,
+                cur_speed_iter,
+                state_sub_count,
+            )
+        } //2 is replay
         (1, true) => {
             // 1 is netplay and v player
             // todo: detect v player
+            if framecount > 5 {
+                REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
+            }
 
             if !GIRLSTALKED {
                 handle_online(
