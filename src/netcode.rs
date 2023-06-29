@@ -1,13 +1,13 @@
 #[cfg(feature = "logtofile")]
 use log::info;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::atomic::Ordering::Relaxed,
     time::{Duration, Instant},
 };
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
-use crate::{input_to_accum, rollback::Rollbacker, TARGET_OFFSET, INPUTS_RAW};
+use crate::{input_to_accum, rollback::Rollbacker, INPUTS_RAW, TARGET_OFFSET};
 
 #[derive(Clone, Debug)]
 pub struct NetworkPacket {
@@ -112,8 +112,13 @@ pub struct Netcoder {
     opponent_inputs: Vec<Option<u16>>,
 
     inputs: Vec<u16>,
+
+    send_times: HashMap<usize, Instant>,
+    recv_delays: HashMap<usize, Duration>,
+
     pub delay: usize,
     pub max_rollback: usize,
+    pub display_stats: bool,
 
     past_frame_starts: Vec<FrameTimeData>,
 
@@ -126,10 +131,16 @@ impl Netcoder {
         Self {
             confirms: HashSet::new(),
             inputs: Vec::new(),
+
             opponent_inputs: Vec::new(),
+
+            send_times: HashMap::new(),
+            recv_delays: HashMap::new(),
+
             id: 0,
             delay: 0,
             max_rollback: 0,
+            display_stats: false,
 
             past_frame_starts: Vec::new(),
             receiver,
@@ -228,7 +239,7 @@ impl Netcoder {
 
                         self.past_frame_starts[packet.id] = FrameTimeData::Done(r as i32);
 
-                        //                        Some(r)
+                        //Some(r)
                     }
 
                     FrameTimeData::RemoteFirst(_) => {
@@ -298,6 +309,13 @@ impl Netcoder {
 
             for a in packet.inputs {
                 if self.opponent_inputs[fr].is_none() {
+                    let el = self.send_times.get(&fr.checked_sub(0).unwrap());
+                    if let Some(&x) = el {
+                        let x = time.saturating_duration_since(x);
+                        self.recv_delays.insert(fr, x);
+                    }
+                    //println!("{:?}", self.send_times[fr].elapsed());
+
                     let inp_a = a;
 
                     self.opponent_inputs[fr] = Some(inp_a);
@@ -324,11 +342,12 @@ impl Netcoder {
 
         let input_head = self.id + self.delay;
 
-        let input_range = self.id.saturating_sub(self.max_rollback * 2 + self.delay + 1)..=input_head;
+        let input_range =
+            self.id
+                .saturating_sub(self.max_rollback * 2 + self.delay + 1)..=input_head;
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
-            
             rollbacker.self_inputs.push(current_input);
         }
 
@@ -364,10 +383,29 @@ impl Netcoder {
         };
 
         unsafe { send_packet(to_be_sent.encode()) };
+        self.send_times.insert(input_head, Instant::now());
 
         let m = rollbacker.start();
         if rollbacker.guessed.len() > 10 {
             panic!("WHAT");
+        }
+
+        unsafe {
+            if self.display_stats {
+                if self.id % 60 == 0 && self.id > 0 {
+                    let mut sum = 0;
+                    for a in (self.id - 60)..(self.id) {
+                        if let Some(x) = self.recv_delays.get(&a) {
+                            sum += x.as_micros();
+                        }
+                    }
+                    crate::NEXT_DRAW_PING = Some((sum / 60_000) as i32);
+                } else if crate::NEXT_DRAW_PING.is_none() {
+                    crate::NEXT_DRAW_PING = Some(0)
+                }
+            } else {
+                crate::NEXT_DRAW_PING = None;
+            }
         }
 
         if !self
@@ -429,7 +467,7 @@ unsafe fn send_packet(mut data: Box<[u8]>) {
 
     if rse == -1 {
         //to do, change error handling for sockets
-        
+
         //#[cfg(feature = "logtofile")]
         //info!("socket err: {:?}", WSAGetLastError());
     }

@@ -66,6 +66,11 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
     Ok(())
 }
 
+//constexpr uintptr_t GAME_DRAW_NUMBER_FN = 0x00414940;
+//reinterpret_cast<int(__thiscall *)(void* _this, int number, float x, float y, int a1, char a2)>(GAME_DRAW_NUMBER_FN)
+
+//a 1 and a2 are 0 usually
+
 /*#[no_mangle]
 pub extern "cdecl"
 fn init(_: usize) -> Option<()> {
@@ -224,7 +229,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.4.0 :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.4.1 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -278,11 +283,13 @@ fn truer_exec(filename: Option<PathBuf>) {
             &mut b,
         );
 
-        #[cfg(not(feature = "f62"))] {
+        #[cfg(not(feature = "f62"))]
+        {
             *(0x858b80 as *mut u8) = 0x69;
         }
 
-        #[cfg(feature = "f62")] {
+        #[cfg(feature = "f62")]
+        {
             *(0x858b80 as *mut u8) = 0x6a;
         }
     }
@@ -342,9 +349,24 @@ fn truer_exec(filename: Option<PathBuf>) {
             })
             .unwrap_or(0);
 
+        let net = conf
+            .get(&Identifier::new(
+                Some("Keyboard".to_string()),
+                "toggle_network_stats".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(0);
+
         unsafe {
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
+            TOGGLE_STAT_KEY = net as u8;
         }
     } else {
         todo!()
@@ -468,6 +490,22 @@ fn truer_exec(filename: Option<PathBuf>) {
         VirtualProtect(0x724316 as *const c_void, 4, previous, &mut previous);
     }
 
+    // 9 digit font fix, by ichirin
+    unsafe {
+        for a in [0x43DC7D, 0x882954] {
+            let mut previous = PAGE_PROTECTION_FLAGS(0);
+            VirtualProtect(
+                a as *const c_void,
+                1,
+                PAGE_PROTECTION_FLAGS(0x40),
+                &mut previous,
+            );
+            *(a as *mut u8) = 0x0A;
+
+            VirtualProtect(a as *const c_void, 1, previous, &mut previous);
+        }
+    }
+
     let new = unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(goodhook), 0).hook(6) };
     std::mem::forget(new);
 
@@ -567,6 +605,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
         REQUESTED_THREAD_ID.store(0, Relaxed);
+        NEXT_DRAW_PING = None;
 
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
@@ -656,52 +695,6 @@ fn truer_exec(filename: Option<PathBuf>) {
         *(funnyaddr as *mut u8) = 0xc3;
     }
 
-    //0x4545a7 jump to here if dword ptr [EDI + 0x6e0] less or equal  than ESI
-
-    // changes the check in spectators so that packets are only sent if there is more than N of them in the buffer, to avoid sending incorrect inputs
-    // N was initially 10, but it would desync on round end (one thing to look at is the fact that replays always start to stutter at round end)
-    /*
-    unsafe extern "cdecl" fn maybe_spectator(
-        a: *mut ilhook::x86::Registers,
-        _b: usize,
-        _c: usize,
-    ) -> usize {
-        println!("edi: {}", (*a).edi);
-        if *(((*a).edi + 0x6e0) as *const u32) <= (*a).esi + 40 {
-            //
-            0x4545a7
-        } else {
-            0x45457f
-        }
-    }
-
-    if false {}
-    // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
-    let new = unsafe {
-        ilhook::x86::Hooker::new(0x454577, HookType::JmpToRet(maybe_spectator), 0).hook(6)
-    };
-    std::mem::forget(new);
-
-    unsafe extern "cdecl" fn spectator_report(a: *mut ilhook::x86::Registers, _b: usize) {
-        let eax = (*a).eax;
-        let ptr = eax as *mut u16;
-
-        let frame = (*a).esi / 2 + 1;
-        let player = (*a).esi & 1;
-
-        let mine = INPUTS_RAW.lock().unwrap().get(&(frame as usize)).unwrap()[player as usize];
-        let old = *ptr;
-        *ptr = mine;
-
-        //println!("addr: {}, their input: {}, mine input: {}, frame: {}, ptr: {}", eax, old, mine, (*a).esi, (*a).ecx);
-    }
-
-    // changes the spectator logic to only send frame if there are at least 10 frames in the buffer. this prevent spectator from desyncing
-    let new = unsafe {
-        ilhook::x86::Hooker::new(0x45458b, HookType::JmpBack(spectator_report), 0).hook(5)
-    };
-    std::mem::forget(new);
-    */
     unsafe extern "cdecl" fn spectator_skip(
         a: *mut ilhook::x86::Registers,
         _b: usize,
@@ -739,45 +732,15 @@ fn truer_exec(filename: Option<PathBuf>) {
     };
     std::mem::forget(new);
 
-    unsafe extern "cdecl" fn spectator_override(
-        a: *mut ilhook::x86::Registers,
-        _b: usize,
-        _c: usize,
-    ) {
-        /*
-        0042daf6 8b 4c 24 30     MOV        ECX,dword ptr [ESP + param_1]
-        0042dafa 8d 04 6a        LEA        EAX,[EDX + EBP*0x2]
-        */
-        println!("here 4");
-        (*a).ecx = *(((*a).esp + 0x30) as *const u32);
-        (*a).eax = (*a).edx + (*a).ebp * 2;
-
-        let input_ptr_ptr = (*a).eax as *mut u16;
-
-        let fc = SPECTATOR_LAST_FRAMECOUNT / 2;
-        let pl = SPECTATOR_LAST_FRAMECOUNT & 1;
-
-        let mine = INPUTS_RAW.lock().unwrap().get(&(fc as usize + 50)).unwrap()[pl as usize];
-        println!("their input: {}, my input: {:?}", *input_ptr_ptr, mine);
-        //std::thread::sleep(Duration::from_secs(1));
-        SPECTATOR_NEXT_INPUT = mine;
-        (*a).eax = &mut SPECTATOR_NEXT_INPUT as *mut u16 as u32;
-        println!("here 5");
-        //*input_ptr_ptr = mine;
-        //let input_ptr = (*input_ptr_ptr) as *const u16;
+    unsafe extern "cdecl" fn drawnumbers(_a: *mut ilhook::x86::Registers, _b: usize) {
+        if let Some(x) = NEXT_DRAW_PING {
+            draw_num((320.0, 466.0), x);
+        }
     }
 
-    /*
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x42daf6,
-            HookType::JmpToAddr(0x42daf6 + 7, 0, spectator_override),
-            0,
-        )
-        .hook(7)
-    };
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(drawnumbers), 0).hook(7) };
     std::mem::forget(new);
-    */
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
@@ -1093,6 +1056,10 @@ unsafe fn set_input_buffer(input: [bool; 10], input2: [bool; 10]) {
 }
 //might not be neccesseary
 static REQUESTED_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+static mut NEXT_DRAW_PING: Option<i32> = None;
+static mut NEXT_DRAW_PACKET_LOSS: Option<i32> = None;
+static mut NEXT_DRAW_PACKET_DESYNC: Option<i32> = None;
 
 const SOKU_FRAMECOUNT: *mut usize = 0x8985d8 as *mut usize;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -1570,6 +1537,7 @@ static mut MEMORY_RECEIVER_ALLOC: Option<std::sync::mpsc::Receiver<usize>> = Non
 // this value is offset by 1, because we start sending frames at frame 1, meaning that input for frame n + 1 is sent in packet n
 static mut LAST_DELAY_VALUE: usize = 0;
 
+
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
 static mut BATTLE_STARTED: bool = false;
@@ -1577,6 +1545,23 @@ static mut ESC: u8 = 0; // maybe shouldn't be not atomic
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
+
+
+static mut TOGGLE_STAT_KEY: u8 = 0;
+static mut LAST_TOGGLE: bool = false;
+
+fn draw_num(pos: (f32, f32), num: i32) {
+    let drawfn: extern "thiscall" fn(
+        ptr: *const c_void,
+        number: i32,
+        x: f32,
+        y: f32,
+        a1: i32,
+        a2: u8,
+    ) = unsafe { std::mem::transmute::<usize, _>(0x414940) };
+
+    drawfn(0x882940 as *const c_void, num, pos.0, pos.1, 0, 0);
+}
 
 unsafe fn handle_online(
     framecount: usize,
@@ -1605,6 +1590,13 @@ unsafe fn handle_online(
 
     resume(battle_state);
 
+    let stat_toggle = read_key_better(TOGGLE_STAT_KEY);
+    if stat_toggle && !LAST_TOGGLE {
+        netcoder.display_stats = !netcoder.display_stats;
+    }
+    
+    LAST_TOGGLE = stat_toggle;
+
     let k_up = read_key_better(INCREASE_DELAY_KEY);
     let k_down = read_key_better(DECREASE_DELAY_KEY);
 
@@ -1625,7 +1617,6 @@ unsafe fn handle_online(
     }
 
     LAST_DELAY_VALUE = netcoder.delay;
-
     LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
 
     if *cur_speed_iter == 0 {
