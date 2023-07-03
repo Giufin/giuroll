@@ -229,7 +229,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.4.1 :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.4.2 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -704,7 +704,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         let edi = (*a).edi;
         SPECTATOR_LAST_FRAMECOUNT = edi;
         //println!("edi: {}, framecount: {}", edi, framecount_cur);
-        let no_skip = edi + 100 < framecount_cur && BATTLE_STARTED;
+        let no_skip = edi + 16 < framecount_cur && BATTLE_STARTED;
         if no_skip {
             /*
             LAB_0042daa6                                    XREF[1]:     0042daa0(j)
@@ -1594,7 +1594,7 @@ unsafe fn handle_online(
     if stat_toggle && !LAST_TOGGLE {
         netcoder.display_stats = !netcoder.display_stats;
     }
-    
+
     LAST_TOGGLE = stat_toggle;
 
     let k_up = read_key_better(INCREASE_DELAY_KEY);
