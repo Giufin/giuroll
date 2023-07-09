@@ -309,7 +309,7 @@ impl Netcoder {
 
             for a in packet.inputs {
                 if self.opponent_inputs[fr].is_none() {
-                    let el = self.send_times.get(&fr.checked_sub(0).unwrap());
+                    let el = self.send_times.get(&fr);
                     if let Some(&x) = el {
                         let x = time.saturating_duration_since(x);
                         self.recv_delays.insert(fr, x);

@@ -229,7 +229,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.4.2 :YoumuSleep:\0";
+static TITLE: &str = "Soku with giuroll 0.5.0 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -244,6 +244,13 @@ static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new()
 
 static mut SPECTATOR_LAST_FRAMECOUNT: u32 = 0;
 static mut SPECTATOR_NEXT_INPUT: u16 = 0;
+
+static mut SPIN_TIME_MICROSECOND: i128 = 0;
+
+#[cfg(not(feature = "f62"))]
+const VERSION_BYTE: u8 = 0x69;
+#[cfg(feature = "f62")]
+const VERSION_BYTE: u8 = 0x6a;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -283,15 +290,7 @@ fn truer_exec(filename: Option<PathBuf>) {
             &mut b,
         );
 
-        #[cfg(not(feature = "f62"))]
-        {
-            *(0x858b80 as *mut u8) = 0x69;
-        }
-
-        #[cfg(feature = "f62")]
-        {
-            *(0x858b80 as *mut u8) = 0x6a;
-        }
+        *(0x858b80 as *mut u8) = VERSION_BYTE;
     }
 
     unsafe {
@@ -363,115 +362,28 @@ fn truer_exec(filename: Option<PathBuf>) {
             })
             .unwrap_or(0);
 
+        let spin = conf
+            .get(&Identifier::new(
+                Some("FramerateFix".to_string()),
+                "spin_amount".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(0);
+
         unsafe {
+            SPIN_TIME_MICROSECOND = spin as i128;
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
             TOGGLE_STAT_KEY = net as u8;
         }
     } else {
         todo!()
-    }
-    #[cfg(feature = "logtofile")]
-    if ISDEBUG {
-        info!("true_exec ran, or did it")
-    };
-    #[cfg(feature = "logtofile")]
-    unsafe {
-        if ISDEBUG {
-            info!("moutain_vapor: {}", *(0x8971C0 as *const usize))
-        }
-    };
-
-    unsafe {
-        if false {
-            //let funniest = 0x89ffbe;
-
-            let mut b = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                0x454dad as *const c_void,
-                0xc,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b,
-            );
-            VirtualProtect(
-                0x454dcf as *const c_void,
-                10,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b,
-            );
-            VirtualProtect(
-                0x454d73 as *const c_void,
-                6,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b,
-            );
-
-            *(0x454dad as *mut u32) = 0x90909090;
-            *(0x454db1 as *mut u32) = 0x90909090;
-            *(0x454db5 as *mut u32) = 0x90909090;
-            *(0x454dcf as *mut u32) = 0x90909090;
-            *(0x454dd3 as *mut u32) = 0x90909090;
-            *(0x454dd7 as *mut u16) = 0x9090;
-            *(0x454d73 as *mut u32) = 0x90909090;
-            *(0x454d77 as *mut u16) = 0x9090;
-
-            let funnyaddr = 0x858b80;
-
-            VirtualProtect(
-                funnyaddr as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b as *mut PAGE_PROTECTION_FLAGS,
-            );
-            *(funnyaddr as *mut u8) = 0x64;
-            //8985e8 maybe effect manager please I beg
-            let funnyaddr = 0x401d68;
-            let mut b = PAGE_PROTECTION_FLAGS(0);
-
-            VirtualProtect(
-                funnyaddr as *const c_void,
-                2, //sokuroll does 2 no idea why
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b as *mut PAGE_PROTECTION_FLAGS,
-            );
-            *(funnyaddr as *mut u8) = 0xeb;
-            let funnyaddr = 0x47e1d0;
-            let mut b = PAGE_PROTECTION_FLAGS(0);
-
-            VirtualProtect(
-                funnyaddr as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b as *mut PAGE_PROTECTION_FLAGS,
-            );
-            *(funnyaddr as *mut u8) = 0xc3;
-
-            let funnyaddr = 0x43b120;
-            let mut b = PAGE_PROTECTION_FLAGS(0);
-
-            VirtualProtect(
-                funnyaddr as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b as *mut PAGE_PROTECTION_FLAGS,
-            );
-
-            *(funnyaddr as *mut u8) = 0xc3;
-        }
-
-        /*
-               let funnyaddr = 0x454417;
-               let mut b = PAGE_PROTECTION_FLAGS(0);
-
-               VirtualProtect(
-                   funnyaddr as *const c_void,
-                   5,
-                   PAGE_PROTECTION_FLAGS(0x40),
-                   &mut b as *mut PAGE_PROTECTION_FLAGS,
-               );
-
-               *(funnyaddr as *mut u32) = 0x000108E9;
-        */
     }
 
     //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
@@ -966,28 +878,26 @@ fn truer_exec(filename: Option<PathBuf>) {
         *target += (TARGET_FRAMETIME + s).max(1005) as u128;
 
         let cur = m.elapsed().unwrap().as_micros();
-        let diff = *target as i128 - cur as i128; // - 1000; //spinning
-                                                  //if diff > 1_000_000 {
-                                                  //    panic!("big diff {diff}");
-                                                  //}
+
+        let diff = (*target as i128 + 1000) - cur as i128 - SPIN_TIME_MICROSECOND;
+        //if diff > 1_000_000 {
+        //    panic!("big diff {diff}");
+        //}
 
         //info!("frame diff micro diff: {}", diff);
         let ddiff = (diff / 1000) as i32;
-        let ddiff = if ddiff < 0 {
+        if ddiff < 0 {
             #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
             *target = cur + (TARGET_FRAMETIME) as u128;
-            3
+            
         } else {
-            ddiff
-        };
-        if ddiff > 0 {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
-            let w = target.saturating_sub(m.elapsed().unwrap().as_micros());
-            if w > 0 && w < 1000 {
+            if SPIN_TIME_MICROSECOND != 0 {
                 while m.elapsed().unwrap().as_micros() < *target {}
             }
-        }
+        };
+        
     }
 
     let new = unsafe {
@@ -1240,6 +1150,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                 let netmanager = *(0x8986a0 as *const usize);
                 *(netmanager as *const usize) == 0x858cac
             };
+            //the packet you receive first frame, every round. We are making it manually, to prevent data loss from freezing the game
             if !is_p1 {
                 slic.copy_from_slice(&[
                     13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
@@ -1280,7 +1191,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                     0,
                 ])
             }
-            //the packet you receive first round
         } else {
             (*a).eax = 0x400;
         }
@@ -1312,6 +1222,17 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         }
 
         //info!("received {} {} {}", type1, type2, sceneid);
+    }
+
+    if type1 == 5 {
+        let is_spect = slic[25] == 0;
+
+        //println!("slic26: {:?}", &);
+        if is_spect {
+            slic[1] = VERSION_BYTE;
+        }
+        //is_spect = slic[]
+        //let gamever = slic[1..17];
     }
     //BATTLE_STARTED
 }
@@ -1537,7 +1458,6 @@ static mut MEMORY_RECEIVER_ALLOC: Option<std::sync::mpsc::Receiver<usize>> = Non
 // this value is offset by 1, because we start sending frames at frame 1, meaning that input for frame n + 1 is sent in packet n
 static mut LAST_DELAY_VALUE: usize = 0;
 
-
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
 static mut BATTLE_STARTED: bool = false;
@@ -1545,7 +1465,6 @@ static mut ESC: u8 = 0; // maybe shouldn't be not atomic
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
-
 
 static mut TOGGLE_STAT_KEY: u8 = 0;
 static mut LAST_TOGGLE: bool = false;
