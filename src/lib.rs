@@ -229,7 +229,7 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static TITLE: &str = "Soku with giuroll 0.5.0 :YoumuSleep:\0";
+static mut TITLE: &str = "Soku with giuroll 0.5.0 :YoumuSleep:\0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -374,13 +374,57 @@ fn truer_exec(filename: Option<PathBuf>) {
                 }
                 _ => todo!("non integer .ini entry"),
             })
-            .unwrap_or(0);
+            .unwrap_or(1500);
+
+        let network_menu = conf
+            .get(&Identifier::new(
+                Some("Misc".to_string()),
+                "enable_network_stats_by_default".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Bool(x) => *x,
+                _ => todo!("non bool .ini entry"),
+            })
+            .unwrap_or(false);
+
+        let mut default_delay = conf
+            .get(&Identifier::new(
+                Some("Misc".to_string()),
+                "default_delay".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(2)
+            .clamp(1, 9);
+
+        let mut title = conf
+            .get(&Identifier::new(
+                Some("Misc".to_string()),
+                "game_title".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Str(x) => x.clone(),
+                _ => todo!("non string .ini entry"),
+            })
+            .unwrap_or("Soku with giuroll 0.5.0 :YoumuSleep:".to_string());
+
+        title.push('\0');
+
+        let tleak = Box::leak(Box::new(title));
 
         unsafe {
+            TITLE = tleak.as_mut_str();
             SPIN_TIME_MICROSECOND = spin as i128;
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
             TOGGLE_STAT_KEY = net as u8;
+            TOGGLE_STAT = network_menu;
+            LAST_DELAY_VALUE = default_delay as usize;
         }
     } else {
         todo!()
@@ -890,14 +934,12 @@ fn truer_exec(filename: Option<PathBuf>) {
             #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
             *target = cur + (TARGET_FRAMETIME) as u128;
-            
         } else {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
                 while m.elapsed().unwrap().as_micros() < *target {}
             }
         };
-        
     }
 
     let new = unsafe {
@@ -1467,6 +1509,8 @@ static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
 
 static mut TOGGLE_STAT_KEY: u8 = 0;
+
+static mut TOGGLE_STAT: bool = false;
 static mut LAST_TOGGLE: bool = false;
 
 fn draw_num(pos: (f32, f32), num: i32) {
@@ -1499,6 +1543,7 @@ unsafe fn handle_online(
         let mut netcoder = Netcoder::new(m);
         netcoder.delay = LAST_DELAY_VALUE;
         netcoder.max_rollback = 6;
+        netcoder.display_stats = TOGGLE_STAT;
         NETCODER = Some(netcoder);
 
         return;
@@ -1511,7 +1556,8 @@ unsafe fn handle_online(
 
     let stat_toggle = read_key_better(TOGGLE_STAT_KEY);
     if stat_toggle && !LAST_TOGGLE {
-        netcoder.display_stats = !netcoder.display_stats;
+        TOGGLE_STAT = !TOGGLE_STAT;
+        netcoder.display_stats = TOGGLE_STAT;
     }
 
     LAST_TOGGLE = stat_toggle;
