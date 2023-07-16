@@ -6,7 +6,7 @@ Is a network rollback mod for 東方非想天則 / Touhou 12.3 Hisoutensoku, whi
 
 Currently this is a very early version and contains a lot of issues, but will still significantly improve the netplay experience for many connections.  
 
-This repository also contains a stripped down version version of the crate [ilhook-rs](https://github.com/regomne/ilhook-rs), all rights remain with their respective authors.
+This repository also contains a stripped down version version of the crate [ilhook-rs](https://github.com/regomne/ilhook-rs), and a modified version of [mininip](https://github.com/SlooowAndFurious/mininip), all rights remain with their respective authors.
 
 ## Current Issues  
 

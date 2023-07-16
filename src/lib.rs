@@ -407,6 +407,31 @@ fn truer_exec(filename: Option<PathBuf>) {
             .unwrap_or(2)
             .clamp(0, 8)
             + 1;
+        let f62_enabled = conf
+            .get(&Identifier::new(
+                Some("FramerateFix".to_string()),
+                "enable_f62".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Bool(x) => *x,
+                _ => todo!("non bool .ini entry"),
+            })
+            .unwrap_or({
+                #[cfg(feature = "f62")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "f62"))]
+                {
+                    false
+                }
+            });
+
+        let verstr: String = if f62_enabled {
+            format!("{}CN", VER)
+        } else {
+            format!("{}", VER)
+        };
 
         let mut title = conf
             .get(&Identifier::new(
@@ -417,7 +442,7 @@ fn truer_exec(filename: Option<PathBuf>) {
                 Value::Str(x) => x.clone(),
                 _ => todo!("non string .ini entry"),
             })
-            .unwrap_or(format!("Soku with giuroll {} :YoumuSleep:", VER));
+            .unwrap_or(format!("Soku with giuroll {} :YoumuSleep:", verstr));
         title.push('\0');
 
         let f62_enabled = conf
@@ -440,11 +465,7 @@ fn truer_exec(filename: Option<PathBuf>) {
                 }
             });
 
-        let verstr = if f62_enabled {
-            format!("Giuroll {}CN", VER)
-        } else {
-            format!("Giuroll {}", VER)
-        };
+        let verstr = format!("Giuroll {}", verstr);
 
         let title = title.replace('$', &verstr);
 
