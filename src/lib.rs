@@ -229,7 +229,8 @@ static mut TARGET: Option<u128> = None;
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static mut TITLE: &str = "Soku with giuroll 0.5.0 :YoumuSleep:\0";
+static mut TITLE: &'static [u16] = &[];
+const VER: &str = "0.5.2";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -247,10 +248,10 @@ static mut SPECTATOR_NEXT_INPUT: u16 = 0;
 
 static mut SPIN_TIME_MICROSECOND: i128 = 0;
 
-#[cfg(not(feature = "f62"))]
-const VERSION_BYTE: u8 = 0x69;
-#[cfg(feature = "f62")]
-const VERSION_BYTE: u8 = 0x6a;
+static mut F62_ENABLED: bool = false;
+
+const VERSION_BYTE_60: u8 = 0x69;
+const VERSION_BYTE_62: u8 = 0x6a;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -290,7 +291,11 @@ fn truer_exec(filename: Option<PathBuf>) {
             &mut b,
         );
 
-        *(0x858b80 as *mut u8) = VERSION_BYTE;
+        *(0x858b80 as *mut u8) = if F62_ENABLED {
+            VERSION_BYTE_62
+        } else {
+            VERSION_BYTE_60
+        };
     }
 
     unsafe {
@@ -317,7 +322,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 
         println!("{:?}", filepath);
         let conf = mininip::parse::parse_file(filepath).unwrap();
-        //let keyboard_section = conf.section(Some("Keyboard")).unwrap();
+        // TODO: fix this whole section
 
         let inc = conf
             .get(&Identifier::new(
@@ -387,7 +392,7 @@ fn truer_exec(filename: Option<PathBuf>) {
             })
             .unwrap_or(false);
 
-        let mut default_delay = conf
+        let default_delay = conf
             .get(&Identifier::new(
                 Some("Misc".to_string()),
                 "default_delay".to_string(),
@@ -400,7 +405,8 @@ fn truer_exec(filename: Option<PathBuf>) {
                 _ => todo!("non integer .ini entry"),
             })
             .unwrap_or(2)
-            .clamp(1, 9);
+            .clamp(0, 8)
+            + 1;
 
         let mut title = conf
             .get(&Identifier::new(
@@ -411,14 +417,45 @@ fn truer_exec(filename: Option<PathBuf>) {
                 Value::Str(x) => x.clone(),
                 _ => todo!("non string .ini entry"),
             })
-            .unwrap_or("Soku with giuroll 0.5.0 :YoumuSleep:".to_string());
-
+            .unwrap_or(format!("Soku with giuroll {} :YoumuSleep:", VER));
         title.push('\0');
 
+        let f62_enabled = conf
+            .get(&Identifier::new(
+                Some("FramerateFix".to_string()),
+                "enable_f62".to_string(),
+            ))
+            .map(|x| match x {
+                Value::Bool(x) => *x,
+                _ => todo!("non bool .ini entry"),
+            })
+            .unwrap_or({
+                #[cfg(feature = "f62")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "f62"))]
+                {
+                    false
+                }
+            });
+
+        let verstr = if f62_enabled {
+            format!("Giuroll {}CN", VER)
+        } else {
+            format!("Giuroll {}", VER)
+        };
+
+        let title = title.replace('$', &verstr);
+
         let tleak = Box::leak(Box::new(title));
+        let bxd = tleak.encode_utf16().collect::<Box<_>>();
+
+        println!("bxd: {:?}", bxd);
 
         unsafe {
-            TITLE = tleak.as_mut_str();
+            TITLE = Box::leak(tleak.encode_utf16().collect::<Box<_>>());
+            F62_ENABLED = f62_enabled;
             SPIN_TIME_MICROSECOND = spin as i128;
             INCREASE_DELAY_KEY = inc as u8;
             DECREASE_DELAY_KEY = dec as u8;
@@ -897,10 +934,16 @@ fn truer_exec(filename: Option<PathBuf>) {
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn timing_loop(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
-        #[cfg(feature = "f62")]
-        const TARGET_FRAMETIME: i32 = 1_000_000 / 62;
-        #[cfg(not(feature = "f62"))]
-        const TARGET_FRAMETIME: i32 = 1_000_000 / 60;
+        //#[cfg(feature = "f62")]
+        //const TARGET_FRAMETIME: i32 = 1_000_000 / 62;
+        //#[cfg(not(feature = "f62"))]
+        //const TARGET_FRAMETIME: i32 = 1_000_000 / 60;
+
+        let target_frametime = if F62_ENABLED {
+            1_000_000 / 62
+        } else {
+            1_000_000 / 60
+        };
 
         let waithandle = (*a).esi; //should I even use this? :/
         let (m, target) = match UPDATE {
@@ -917,9 +960,9 @@ fn truer_exec(filename: Option<PathBuf>) {
         //    TARGET_OFFSET.store(0, Relaxed);
         //}
 
-        let s = TARGET_OFFSET.swap(0, Relaxed);
+        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-200, 1000);
         //TARGET_OFFSET.fetch_add(s / 2, Relaxed);
-        *target += (TARGET_FRAMETIME + s).max(1005) as u128;
+        *target += (target_frametime + s) as u128;
 
         let cur = m.elapsed().unwrap().as_micros();
 
@@ -933,7 +976,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         if ddiff < 0 {
             #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
-            *target = cur + (TARGET_FRAMETIME) as u128;
+            *target = cur + (target_frametime) as u128;
         } else {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
@@ -974,9 +1017,9 @@ fn truer_exec(filename: Option<PathBuf>) {
                 &mut whatever,
             );
 
-            windows::Win32::UI::WindowsAndMessaging::SetWindowTextA(
+            windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
                 *(0x89ff90 as *const HWND),
-                windows::core::PCSTR::from_raw(TITLE.as_ptr()),
+                windows::core::PCWSTR::from_raw(TITLE.as_ptr()),
             )
         })
     };
@@ -1185,8 +1228,10 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     if type1 == 0x69 {
         let z = NetworkPacket::decode(slic);
-        if DISABLE_SEND.load(Relaxed) == 0 {
-            DISABLE_SEND.store(1, Relaxed);
+        let m = DISABLE_SEND.load(Relaxed);
+
+        if m < 2 {
+            DISABLE_SEND.store(m + 1, Relaxed);
 
             let is_p1 = unsafe {
                 let netmanager = *(0x8986a0 as *const usize);
@@ -1194,44 +1239,92 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             };
             //the packet you receive first frame, every round. We are making it manually, to prevent data loss from freezing the game
             if !is_p1 {
-                slic.copy_from_slice(&[
-                    13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
-                    104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0, 208, 0,
-                    208, 0, 208, 0, 1, 15, 0, 0, 0, 142, 15, 14, 252, 36, 143, 52, 108, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                ])
+                const P1_PACKETS: [[u8; 400]; 2] = [
+                    [
+                        13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
+                        104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0,
+                        208, 0, 208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108,
+                        0, 0, 0, 0, 0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                    [
+                        13, 3, 2, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 103, 0, 103, 0, 103, 0,
+                        104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0,
+                        208, 0, 208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108,
+                        0, 0, 0, 0, 0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                ];
+
+                slic.copy_from_slice(&P1_PACKETS[m as usize])
             } else {
-                slic.copy_from_slice(&[
-                    14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0, 102,
-                    0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0, 201, 0, 201,
-                    0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 69, 119, 176, 189, 128, 118, 60, 0, 0,
-                    18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0,
-                ])
+                const P2_PACKETS: [[u8; 400]; 2] = [
+                    [
+                        14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0,
+                        102, 0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0,
+                        201, 0, 201, 0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37,
+                        118, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                    [
+                        14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0,
+                        102, 0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0,
+                        201, 0, 201, 0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37,
+                        118, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                ];
+                //both packets here are the same, both are the 0th packet, this is maybe unneccesseary
+
+                slic.copy_from_slice(&P2_PACKETS[m as usize])
             }
         } else {
             (*a).eax = 0x400;
@@ -1271,7 +1364,11 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
         //println!("slic26: {:?}", &);
         if is_spect {
-            slic[1] = VERSION_BYTE;
+            if F62_ENABLED {
+                slic[1] = VERSION_BYTE_62;
+            } else {
+                slic[1] = VERSION_BYTE_60;
+            }
         }
         //is_spect = slic[]
         //let gamever = slic[1..17];

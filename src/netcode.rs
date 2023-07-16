@@ -268,14 +268,14 @@ impl Netcoder {
                         {
                             Some(FrameTimeData::Done(local)) => {
                                 let diff = *local - remote;
-                                //info!("frame diff {}", diff);
+                                //println!("frame diff {}", diff);
 
                                 let diff = if diff.abs() < 1000 { diff / 10 } else { diff };
 
                                 TARGET_OFFSET.fetch_add(diff / 50, Relaxed);
                             }
                             Some(FrameTimeData::RemoteFirst(_)) => {
-                                //info!("frame diff: remote first");
+                                //println!("frame diff: remote first");
                                 TARGET_OFFSET.fetch_add(-200, Relaxed);
                             }
                             Some(_) => (),
