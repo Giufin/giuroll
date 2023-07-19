@@ -230,7 +230,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.5.2";
+const VER: &str = "0.5.3";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -282,21 +282,7 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
-    unsafe {
-        let mut b = PAGE_PROTECTION_FLAGS(0);
-        VirtualProtect(
-            0x858b80 as *const c_void,
-            1,
-            PAGE_PROTECTION_FLAGS(0x40),
-            &mut b,
-        );
 
-        *(0x858b80 as *mut u8) = if F62_ENABLED {
-            VERSION_BYTE_62
-        } else {
-            VERSION_BYTE_60
-        };
-    }
 
     unsafe {
         let (s, r) = std::sync::mpsc::channel();
@@ -484,6 +470,23 @@ fn truer_exec(filename: Option<PathBuf>) {
             TOGGLE_STAT = network_menu;
             LAST_DELAY_VALUE = default_delay as usize;
         }
+
+        unsafe {
+            let mut b = PAGE_PROTECTION_FLAGS(0);
+            VirtualProtect(
+                0x858b80 as *const c_void,
+                1,
+                PAGE_PROTECTION_FLAGS(0x40),
+                &mut b,
+            );
+    
+            *(0x858b80 as *mut u8) = if F62_ENABLED {
+                VERSION_BYTE_62
+            } else {
+                VERSION_BYTE_60
+            };
+        }
+        
     } else {
         todo!()
     }
@@ -1250,8 +1253,8 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     if type1 == 0x69 {
         let z = NetworkPacket::decode(slic);
         let m = DISABLE_SEND.load(Relaxed);
-
-        if m < 2 {
+        
+        if m < 100 {
             DISABLE_SEND.store(m + 1, Relaxed);
 
             let is_p1 = unsafe {
@@ -1301,7 +1304,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                     ],
                 ];
 
-                slic.copy_from_slice(&P1_PACKETS[m as usize])
+                slic.copy_from_slice(&P1_PACKETS[m as usize % 2])
             } else {
                 const P2_PACKETS: [[u8; 400]; 2] = [
                     [
@@ -1345,7 +1348,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                 ];
                 //both packets here are the same, both are the 0th packet, this is maybe unneccesseary
 
-                slic.copy_from_slice(&P2_PACKETS[m as usize])
+                slic.copy_from_slice(&P2_PACKETS[m as usize % 2])
             }
         } else {
             (*a).eax = 0x400;
@@ -1356,8 +1359,15 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             .unwrap()
             .send((z, Instant::now()))
             .unwrap();
+    } else {
+       //println!("received {} {} {}, data: {:?}", type1, type2, sceneid, slic);
     }
-    if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 {
+
+    if type1 == 13 {
+        //println!("received p2: {}", type2);
+    }
+
+    if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 && false{
         let is_p1 = unsafe {
             let netmanager = *(0x8986a0 as *const usize);
             *(netmanager as *const usize) == 0x858cac
@@ -1368,6 +1378,8 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             type1, type2, slic, is_p1
         );
     }
+
+    
 
     if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
