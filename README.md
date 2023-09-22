@@ -46,7 +46,7 @@ you can contact me about any issues through discord: `@giufin` in DMs or in the 
 
 Ysaron - for majority of the testing 
 
-ChèvreDeFeu, TStar, Barcode, Rouen, Klempfer, LunaTriv, Aquatic and BIG BREWED - for additional testing
+ChèvreDeFeu, TStar, Barcode, Rouen, Klempfer, LunaTriv, Aquatic, BIG BREWED and Sigets - for additional testing
 
 [Slavfox](https://github.com/slavfox) - for various help with reverse engineering and open source
 

@@ -13,6 +13,7 @@ use std::{
 };
 mod netcode;
 mod rollback;
+mod sound;
 
 use ilhook::x86::{HookPoint, HookType};
 
@@ -23,6 +24,7 @@ use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
 //use notify::{RecursiveMode, Watcher};
 use rollback::{dump_frame, Frame, MemoryManip, Rollbacker};
+use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
@@ -230,14 +232,15 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.5.3";
+const VER: &str = "0.5.5";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
-static SOUND_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
+//static SOUNDS_THAT_DID_HAPPEN: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
 
 // set this mutex at the start of each frame. after each rollback you can see which sounds are left in this mutex. these sounds can and should be pasued
-static SOUND_DELET_MUTEX: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
+//static SOUND_THAT_MAYBE_HAPPEN: Mutex<BTreeMap<usize, Vec<usize>>> = Mutex::new(BTreeMap::new());
+static mut SOUND_MANAGER: Option<RollbackSoundManager> = None;
 
 static mut FORCE_SOUND_SKIP: bool = false;
 //this is getting bad, fix the redundancy
@@ -282,7 +285,6 @@ fn truer_exec(filename: Option<PathBuf>) {
 
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
-
 
     unsafe {
         let (s, r) = std::sync::mpsc::channel();
@@ -479,14 +481,13 @@ fn truer_exec(filename: Option<PathBuf>) {
                 PAGE_PROTECTION_FLAGS(0x40),
                 &mut b,
             );
-    
+
             *(0x858b80 as *mut u8) = if F62_ENABLED {
                 VERSION_BYTE_62
             } else {
                 VERSION_BYTE_60
             };
         }
-        
     } else {
         todo!()
     }
@@ -541,32 +542,23 @@ fn truer_exec(filename: Option<PathBuf>) {
         (*a).eax = *(((*a).esp + 4) as *const u32);
         let soundid = (*a).eax as usize;
 
-        if !BATTLE_STARTED {
+        if !BATTLE_STARTED || soundid == 0 {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
         }
 
-        let mut w = SOUND_MUTEX.lock().unwrap();
-        let w2 = &mut *w;
-        let items = w2.entry(*SOKU_FRAMECOUNT).or_insert_with(|| Vec::new());
-
-        let ret = if soundid == 0 || items.iter().find(|x| **x == soundid).is_some() {
-            0x401db7
-        } else {
-            let old = SOUND_DELET_MUTEX.lock().unwrap();
-            items.push(soundid);
-            if let Some(vec) = old.get(&*SOKU_FRAMECOUNT) {
-                if vec.iter().find(|x| **x == soundid).is_some() {
-                    // sound already playing
-                    0x401db7
-                } else {
-                    0x401d58
-                }
-            } else {
+        if let Some(manager) = SOUND_MANAGER.as_mut() {
+            println!("trying to play sound {} at frame {} with rollback {}", soundid, *SOKU_FRAMECOUNT, manager.current_rollback.is_some());
+            if manager.insert_sound(*SOKU_FRAMECOUNT, soundid) {
+                println!("sound accepted");
                 0x401d58
+            } else {
+                println!("sound rejected because it was already present");
+                0x401db7
             }
-        };
-        //REQUESTED_THREAD_ID.swap(sw, Relaxed);
-        ret
+        } else {
+            0x401d58
+        }
+       
     }
 
     let new = unsafe {
@@ -630,8 +622,8 @@ fn truer_exec(filename: Option<PathBuf>) {
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
 
-        SOUND_MUTEX.lock().unwrap().clear();
-        SOUND_DELET_MUTEX.lock().unwrap().clear();
+        //SOUNDS_THAT_DID_HAPPEN.lock().unwrap().clear();
+        //SOUND_THAT_MAYBE_HAPPEN.lock().unwrap().clear();
 
         INPUTS_RAW.lock().unwrap().clear();
         let heap = unsafe { *(0x89b404 as *const isize) };
@@ -1253,7 +1245,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     if type1 == 0x69 {
         let z = NetworkPacket::decode(slic);
         let m = DISABLE_SEND.load(Relaxed);
-        
+
         if m < 100 {
             DISABLE_SEND.store(m + 1, Relaxed);
 
@@ -1360,14 +1352,14 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             .send((z, Instant::now()))
             .unwrap();
     } else {
-       //println!("received {} {} {}, data: {:?}", type1, type2, sceneid, slic);
+        //println!("received {} {} {}, data: {:?}", type1, type2, sceneid, slic);
     }
 
     if type1 == 13 {
         //println!("received p2: {}", type2);
     }
 
-    if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 && false{
+    if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 && false {
         let is_p1 = unsafe {
             let netmanager = *(0x8986a0 as *const usize);
             *(netmanager as *const usize) == 0x858cac
@@ -1378,8 +1370,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             type1, type2, slic, is_p1
         );
     }
-
-    
 
     if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
@@ -1665,6 +1655,7 @@ unsafe fn handle_online(
 ) {
     if framecount == 0 {
         BATTLE_STARTED = true;
+        SOUND_MANAGER = Some(RollbackSoundManager::new());
         let m = DATA_RECEIVER.take().unwrap();
 
         let rollbacker = Rollbacker::new();

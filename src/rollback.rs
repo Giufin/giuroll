@@ -10,7 +10,7 @@ use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
     force_sound_skip, input_to_accum, set_input_buffer, ALLOCMUTEX, FREEMUTEX, ISDEBUG,
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_DELET_MUTEX, SOUND_MUTEX,
+    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];
@@ -120,7 +120,7 @@ impl Rollbacker {
     pub fn start(&mut self) -> usize {
         //this should only be called on the 0th iteration.
         self.current = unsafe { *SOKU_FRAMECOUNT };
-        let newsound = std::mem::replace(&mut *SOUND_MUTEX.lock().unwrap(), BTreeMap::new());
+        //let newsound = std::mem::replace(&mut *SOUNDS_THAT_DID_HAPPEN.lock().unwrap(), BTreeMap::new());
 
         while self.guessed.len() > 0
             && (self
@@ -140,7 +140,7 @@ impl Rollbacker {
             //}
         }
 
-        *SOUND_DELET_MUTEX.lock().unwrap() = newsound;
+        //*SOUND_DELET_MUTEX.lock().unwrap() = newsound;
 
         if self.current >= 10 {
             crate::INPUTS_RAW.lock().unwrap().insert(
@@ -197,11 +197,17 @@ impl Rollbacker {
 
         let tbr = if self.guessed.len() == iteration_number {
             //last iteration for this frame, handle sound here
-
+            if self.rolling_back {
+                unsafe {
+                    let manager = SOUND_MANAGER.as_mut().unwrap();
+                    manager.delete_non_matched();
+                }
+            }
+            /*
             let mut to_be_skipped = vec![];
             {
-                let new_sounds = &mut *SOUND_MUTEX.lock().unwrap();
-                let old_sounds = &mut *SOUND_DELET_MUTEX.lock().unwrap();
+                let new_sounds = &mut *SOUNDS_THAT_DID_HAPPEN.lock().unwrap();
+                let old_sounds = &mut *SOUND_THAT_MAYBE_HAPPEN.lock().unwrap();
 
                 let new_col = new_sounds
                     .values()
@@ -209,7 +215,10 @@ impl Rollbacker {
                     .flatten()
                     .collect::<HashSet<_>>();
 
-                for idx in (self.current).saturating_sub(8)..=(self.current) {
+                for idx in (self.current).saturating_sub(10)..=(self.current + 1) {
+                    if new_sounds.contains_key(&(self.current + 1)) {
+                        println!("HERE, CONTAINS")
+                    }
                     if !new_sounds.contains_key(&idx) {
                         continue;
                     }
@@ -224,9 +233,13 @@ impl Rollbacker {
 
                 std::mem::swap(old_sounds, new_sounds);
             };
+            if to_be_skipped.len() != 0{
+                println!("len: {}", to_be_skipped.len());
+            }
             for a in to_be_skipped {
                 force_sound_skip(a);
             }
+            */
 
             let si = self.self_inputs[self.current];
             let ei = self.enemy_inputs.get(self.current);
@@ -253,6 +266,10 @@ impl Rollbacker {
                 Some(())
             } else if fr.enemy_input != self.enemy_inputs.get(fr.prev_state.number) {
                 //info!("ROLLBACK");
+                unsafe {
+                    let manager = SOUND_MANAGER.as_mut().unwrap();
+                    manager.pop_sounds_since(fr.prev_state.number, self.current);
+                }
                 self.rolling_back = true;
                 fr.prev_state.clone().restore();
                 //fr.prev_state.clone().never_happened();
