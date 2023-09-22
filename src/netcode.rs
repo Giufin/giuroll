@@ -7,7 +7,7 @@ use std::{
 };
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
-use crate::{input_to_accum, rollback::Rollbacker, INPUTS_RAW, TARGET_OFFSET};
+use crate::{input_to_accum, rollback::Rollbacker, SOKU_FRAMECOUNT, TARGET_OFFSET};
 
 #[derive(Clone, Debug)]
 pub struct NetworkPacket {
@@ -18,7 +18,8 @@ pub struct NetworkPacket {
     max_rollback: u8,
 
     inputs: Vec<u16>, //also u8 in size? starts out at id + delay
-    confirms: Vec<bool>,
+    //confirms: Vec<bool>,
+    last_confirm: usize,
     sync: Option<i32>,
 }
 
@@ -167,11 +168,11 @@ impl Netcoder {
 
             //host only
             let delay_display = (netmanager + 0x80) as *mut u8;
-            *delay_display = (self.delay as u8) - 1;
+            *delay_display = self.delay as u8;
 
             //client only
             let delay_display = (netmanager + 0x81) as *mut u8;
-            *delay_display = (self.delay as u8) - 1;
+            *delay_display = self.delay as u8;
 
             is_p1 = netmanager != 0 && *(netmanager as *const usize) == 0x858cac;
         }
@@ -193,9 +194,9 @@ impl Netcoder {
 
             //todo, handle time data packets not ariving at all, by taking the time of arrival of the subsequent packet
 
-            if packet.id + (packet.delay as usize) >= self.opponent_inputs.len() {
+            if packet.id >= self.opponent_inputs.len() {
                 if !is_p1 {
-                    self.delay = packet.delay as usize;
+                    //self.delay = packet.delay as usize;
                     self.max_rollback = packet.max_rollback as usize;
                 }
 
@@ -292,6 +293,9 @@ impl Netcoder {
                     .cloned()
                     .unwrap_or(0);
                 if weather_remote != weather_local {
+                    #[cfg(feature = "allocconsole")]
+                    println!("desync");
+
                     //todo, add different desync indication !
                     #[cfg(feature = "logtofile")]
                     info!(
@@ -301,7 +305,7 @@ impl Netcoder {
                 }
             }
 
-            let latest = packet.id + packet.delay as usize; //last delay
+            let latest = packet.id as usize; //last delay
             while self.opponent_inputs.len() <= latest as usize {
                 self.opponent_inputs.push(None);
             }
@@ -340,11 +344,9 @@ impl Netcoder {
             }
         }
 
-        let input_head = self.id + self.delay;
+        let input_head = self.id;
 
-        let input_range =
-            self.id
-                .saturating_sub(self.max_rollback * 2 + self.delay + 1)..=input_head;
+        let input_range = self.id.saturating_sub(20)..=input_head;
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
@@ -386,6 +388,16 @@ impl Netcoder {
         self.send_times.insert(input_head, Instant::now());
 
         let m = rollbacker.start();
+
+        let diff = (self.id - unsafe { *SOKU_FRAMECOUNT }) as i64;
+        let m = if diff < (self.delay as i64) {
+            m.saturating_sub(1)
+        } else if diff > (self.delay as i64) {
+            m + 1
+        } else {
+            m
+        };
+
         if rollbacker.guessed.len() > 10 {
             panic!("WHAT");
         }
@@ -410,7 +422,7 @@ impl Netcoder {
 
         if !self
             .confirms
-            .contains(&((self.id + 1).saturating_sub(self.max_rollback)))
+            .contains(&((self.id + 1).saturating_sub(self.max_rollback + self.delay)))
         {
             //info!("frame is missing: m: {m}, id: {}", self.id,);
             0
@@ -432,6 +444,7 @@ impl Netcoder {
             }
 
             self.id += 1;
+
             m as u32
         }
     }

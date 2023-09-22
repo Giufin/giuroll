@@ -142,16 +142,6 @@ impl Rollbacker {
 
         //*SOUND_DELET_MUTEX.lock().unwrap() = newsound;
 
-        if self.current >= 10 {
-            crate::INPUTS_RAW.lock().unwrap().insert(
-                self.current - 10,
-                [
-                    input_to_accum(&self.enemy_inputs.get_result(self.current - 10).unwrap()),
-                    input_to_accum(&self.self_inputs[self.current - 10]),
-                ],
-            );
-        };
-
         self.rolling_back = false;
         self.guessed.len() + 1
     }

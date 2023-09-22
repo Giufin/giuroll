@@ -232,7 +232,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.5.5";
+const VER: &str = "0.6.0";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -244,7 +244,7 @@ static mut SOUND_MANAGER: Option<RollbackSoundManager> = None;
 
 static mut FORCE_SOUND_SKIP: bool = false;
 //this is getting bad, fix the redundancy
-static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new());
+//static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new());
 
 static mut SPECTATOR_LAST_FRAMECOUNT: u32 = 0;
 static mut SPECTATOR_NEXT_INPUT: u16 = 0;
@@ -393,8 +393,7 @@ fn truer_exec(filename: Option<PathBuf>) {
                 _ => todo!("non integer .ini entry"),
             })
             .unwrap_or(2)
-            .clamp(0, 8)
-            + 1;
+            .clamp(0, 8);
         let f62_enabled = conf
             .get(&Identifier::new(
                 Some("FramerateFix".to_string()),
@@ -524,7 +523,8 @@ fn truer_exec(filename: Option<PathBuf>) {
         }
     }
 
-    let new = unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(goodhook), 0).hook(6) };
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(main_hook), 0).hook(6) };
     std::mem::forget(new);
 
     let new =
@@ -547,7 +547,12 @@ fn truer_exec(filename: Option<PathBuf>) {
         }
 
         if let Some(manager) = SOUND_MANAGER.as_mut() {
-            println!("trying to play sound {} at frame {} with rollback {}", soundid, *SOKU_FRAMECOUNT, manager.current_rollback.is_some());
+            println!(
+                "trying to play sound {} at frame {} with rollback {}",
+                soundid,
+                *SOKU_FRAMECOUNT,
+                manager.current_rollback.is_some()
+            );
             if manager.insert_sound(*SOKU_FRAMECOUNT, soundid) {
                 println!("sound accepted");
                 0x401d58
@@ -558,7 +563,6 @@ fn truer_exec(filename: Option<PathBuf>) {
         } else {
             0x401d58
         }
-       
     }
 
     let new = unsafe {
@@ -625,7 +629,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //SOUNDS_THAT_DID_HAPPEN.lock().unwrap().clear();
         //SOUND_THAT_MAYBE_HAPPEN.lock().unwrap().clear();
 
-        INPUTS_RAW.lock().unwrap().clear();
+        //INPUTS_RAW.lock().unwrap().clear();
         let heap = unsafe { *(0x89b404 as *const isize) };
 
         // we should be removing allocations that happen during frames which were rolled back, but that somehow breaks it, possibly because of some null check initializations
@@ -1653,7 +1657,7 @@ unsafe fn handle_online(
     cur_speed_iter: &mut u32,
     state_sub_count: &mut u32,
 ) {
-    if framecount == 0 {
+    if framecount == 0 && !BATTLE_STARTED {
         BATTLE_STARTED = true;
         SOUND_MANAGER = Some(RollbackSoundManager::new());
         let m = DATA_RECEIVER.take().unwrap();
@@ -1667,7 +1671,7 @@ unsafe fn handle_online(
         netcoder.display_stats = TOGGLE_STAT;
         NETCODER = Some(netcoder);
 
-        return;
+        //return;
     }
 
     let rollbacker = ROLLBACKER.as_mut().unwrap();
@@ -1683,29 +1687,29 @@ unsafe fn handle_online(
 
     LAST_TOGGLE = stat_toggle;
 
-    let k_up = read_key_better(INCREASE_DELAY_KEY);
-    let k_down = read_key_better(DECREASE_DELAY_KEY);
-
-    let last_up = LAST_DELAY_MANIP & 1 == 1;
-    let last_down = LAST_DELAY_MANIP & 2 == 2;
-
-    if !last_up && k_up {
-        if netcoder.delay < 9 {
-            // values skewed by 1 because of the my_frame-frame_id offset
-            netcoder.delay += 1;
-        }
-    }
-
-    if !last_down && k_down {
-        if netcoder.delay > 1 {
-            netcoder.delay -= 1;
-        }
-    }
-
-    LAST_DELAY_VALUE = netcoder.delay;
-    LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
-
     if *cur_speed_iter == 0 {
+        
+        let k_up = read_key_better(INCREASE_DELAY_KEY);
+        let k_down = read_key_better(DECREASE_DELAY_KEY);
+
+        let last_up = LAST_DELAY_MANIP & 1 == 1;
+        let last_down = LAST_DELAY_MANIP & 2 == 2;
+
+        if !last_up && k_up {
+            if netcoder.delay < 9 {
+                netcoder.delay += 1;
+            }
+        }
+
+        if !last_down && k_down {
+            if netcoder.delay > 0 {
+                netcoder.delay -= 1;
+            }
+        }
+        LAST_DELAY_VALUE = netcoder.delay;
+        LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
+
+
         let input = read_current_input();
         let speed = netcoder.process_and_send(rollbacker, input);
         *cur_speed = speed;
@@ -1726,7 +1730,7 @@ unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize
     //REQUESTED_THREAD_ID.store(0, Relaxed);
 }
 
-unsafe extern "cdecl" fn goodhook(a: *mut ilhook::x86::Registers, _b: usize) {
+unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     //println!("GAMETYPE TRUE {}", *(0x8986a0 as *const usize));
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
