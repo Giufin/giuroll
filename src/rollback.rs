@@ -6,7 +6,13 @@ use std::{
     ffi::c_void,
 };
 
+extern crate user32;
+extern crate winapi;
+
+use std::ffi::CString;
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
+use user32::MessageBoxA;
+use winapi::um::winuser::{MB_OK, MB_ICONERROR};
 
 use crate::{
     force_sound_skip, input_to_accum, set_input_buffer, ALLOCMUTEX, FREEMUTEX, ISDEBUG,
@@ -15,14 +21,152 @@ use crate::{
 
 type RInput = [bool; 10];
 
-const CHARSIZEDATA_A: [usize; 20] = [
-    2236, 2220, 2208, 2244, 2216, 2284, 2196, 2220, 2260, 2200, 2232, 2200, 2200, 2216, 2352, 2224,
-    2196, 2196, 2216, 2216, /* 0, 2208, */
+const CHARSIZEDATA_A: [usize; 35] = [
+    // CHARACTER_REIMU
+    2236,
+    // CHARACTER_MARISA
+    2220,
+    // CHARACTER_SAKUYA
+    2208,
+    // CHARACTER_ALICE
+    2244,
+    // CHARACTER_PATCHOULI
+    2216,
+    // CHARACTER_YOUMU
+    2284,
+    // CHARACTER_REMILIA
+    2196,
+    // CHARACTER_YUYUKO
+    2220,
+    // CHARACTER_YUKARI
+    2260,
+    // CHARACTER_SUIKA
+    2200,
+    // CHARACTER_REISEN
+    2232,
+    // CHARACTER_AYA
+    2200,
+    // CHARACTER_KOMACHI
+    2200,
+    // CHARACTER_IKU
+    2216,
+    // CHARACTER_TENSHI
+    2352,
+    // CHARACTER_SANAE
+    2224,
+    // CHARACTER_CIRNO
+    2196,
+    // CHARACTER_MEILING
+    2196,
+    // CHARACTER_UTSUHO
+    2216,
+    // CHARACTER_SUWAKO
+    2216,
+    // CHARACTER_RANDOM
+    0,
+    // CHARACTER_NAMAZU
+    2208,
+    //Soku2 Characters
+    // CHARACTER_MOMIJI
+    2236,
+    // CHARACTER_CLOWNPIECE
+    2232,
+    // CHARACTER_FLANDRE
+    2196,
+    // CHARACTER_ORIN
+    2196,
+    // CHARACTER_YUUKA
+    2216,
+    // CHARACTER_KAGUYA
+    2216,
+    // CHARACTER_MOKOU
+    2200,
+    // CHARACTER_MIMA
+    2216,
+    // CHARACTER_SHOU
+    2352,
+    // CHARACTER_MURASA
+    2200,
+    // CHARACTER_SEKIBANKI
+    2284,
+    // CHARACTER_SATORI
+    2220,
+    // CHARACTER_RAN
+    2208,
 ];
 
-const CHARSIZEDATA_B: [usize; 20] = [
-    940, 940, 940, 944, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940,
-    940, /* 0, 940, */
+const CHARSIZEDATA_B: [usize; 35] = [
+    // CHARACTER_REIMU
+    940,
+    // CHARACTER_MARISA
+    940,
+    // CHARACTER_SAKUYA
+    940,
+    // CHARACTER_ALICE
+    944,
+    // CHARACTER_PATCHOULI
+    940,
+    // CHARACTER_YOUMU
+    940,
+    // CHARACTER_REMILIA
+    940,
+    // CHARACTER_YUYUKO
+    940,
+    // CHARACTER_YUKARI
+    940,
+    // CHARACTER_SUIKA
+    940,
+    // CHARACTER_REISEN
+    940,
+    // CHARACTER_AYA
+    940,
+    // CHARACTER_KOMACHI
+    940,
+    // CHARACTER_IKU
+    940,
+    // CHARACTER_TENSHI
+    940,
+    // CHARACTER_SANAE
+    940,
+    // CHARACTER_CIRNO
+    940,
+    // CHARACTER_MEILING
+    940,
+    // CHARACTER_UTSUHO
+    940,
+    // CHARACTER_SUWAKO
+    940,
+    // CHARACTER_RANDOM
+    0,
+    // CHARACTER_NAMAZU
+    940,
+    //Soku2 Characters
+    // CHARACTER_MOMIJI
+    940,
+    // CHARACTER_CLOWNPIECE
+    940,
+    // CHARACTER_FLANDRE
+    940,
+    // CHARACTER_ORIN
+    940,
+    // CHARACTER_YUUKA
+    940,
+    // CHARACTER_KAGUYA
+    940,
+    // CHARACTER_MOKOU
+    940,
+    // CHARACTER_MIMA
+    940,
+    // CHARACTER_SHOU
+    940,
+    // CHARACTER_MURASA
+    940,
+    // CHARACTER_SEKIBANKI
+    940,
+    // CHARACTER_SATORI
+    940,
+    // CHARACTER_RAN
+    940,
 ];
 
 pub enum MemoryManip {
@@ -602,7 +746,22 @@ pub unsafe fn dump_frame() -> Frame {
                 m.push(a.clone().to_addr());
                 let d = a.additional_data;
                 if d != 0 {
-                    let z = CHARSIZEDATA_B[char as usize % 20];
+					if char >= 35 {
+						let lp_text = CString::new("Unsupported character detected. Please update giuroll.").unwrap();
+						let lp_caption = CString::new("Giuroll Error").unwrap();
+
+						unsafe {
+							MessageBoxA(
+								std::ptr::null_mut(),
+								lp_text.as_ptr(),
+								lp_caption.as_ptr(),
+								MB_OK | MB_ICONERROR
+							);
+						}
+						panic!("unsupported character used");
+					}
+
+                    let z = CHARSIZEDATA_B[char as usize];
                     let bullet = read_addr(d, z);
                     m.push(bullet.clone());
                     let p1 = get_ptr(&bullet.content, 0x3a4);
@@ -680,7 +839,22 @@ pub unsafe fn dump_frame() -> Frame {
         let char = old + 0x34c;
         let char = *(char as *const u8);
 
-        let cdat = read_addr(old, CHARSIZEDATA_A[char as usize % 20]);
+		if char >= 35 {
+			let lp_text = CString::new("Unsupported character detected. Please update giuroll.").unwrap();
+			let lp_caption = CString::new("Giuroll Error").unwrap();
+
+			unsafe {
+				MessageBoxA(
+					std::ptr::null_mut(),
+					lp_text.as_ptr(),
+					lp_caption.as_ptr(),
+					MB_OK | MB_ICONERROR
+				);
+			}
+			panic!("unsupported character used");
+		}
+
+        let cdat = read_addr(old, CHARSIZEDATA_A[char as usize]);
         m.push(cdat.clone());
 
         let bullets = old + 0x17c;
