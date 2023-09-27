@@ -6,13 +6,7 @@ use std::{
     ffi::c_void,
 };
 
-extern crate user32;
-extern crate winapi;
-
-use std::ffi::CString;
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
-use user32::MessageBoxA;
-use winapi::um::winuser::{MB_OK, MB_ICONERROR};
 
 use crate::{
     force_sound_skip, input_to_accum, set_input_buffer, ALLOCMUTEX, FREEMUTEX, ISDEBUG,
@@ -746,22 +740,11 @@ pub unsafe fn dump_frame() -> Frame {
                 m.push(a.clone().to_addr());
                 let d = a.additional_data;
                 if d != 0 {
-					if char >= 35 {
-						let lp_text = CString::new("Unsupported character detected. Please update giuroll.").unwrap();
-						let lp_caption = CString::new("Giuroll Error").unwrap();
-
-						unsafe {
-							MessageBoxA(
-								std::ptr::null_mut(),
-								lp_text.as_ptr(),
-								lp_caption.as_ptr(),
-								MB_OK | MB_ICONERROR
-							);
-						}
-						panic!("unsupported character used");
-					}
-
-                    let z = CHARSIZEDATA_B[char as usize];
+                    let z = if char >= 35 {
+						CHARSIZEDATA_B[char as usize % 20]
+					} else {
+						CHARSIZEDATA_B[char as usize]
+					};
                     let bullet = read_addr(d, z);
                     m.push(bullet.clone());
                     let p1 = get_ptr(&bullet.content, 0x3a4);
@@ -838,23 +821,7 @@ pub unsafe fn dump_frame() -> Frame {
         let old = *((p + 0xc + offset * 4) as *const usize);
         let char = old + 0x34c;
         let char = *(char as *const u8);
-
-		if char >= 35 {
-			let lp_text = CString::new("Unsupported character detected. Please update giuroll.").unwrap();
-			let lp_caption = CString::new("Giuroll Error").unwrap();
-
-			unsafe {
-				MessageBoxA(
-					std::ptr::null_mut(),
-					lp_text.as_ptr(),
-					lp_caption.as_ptr(),
-					MB_OK | MB_ICONERROR
-				);
-			}
-			panic!("unsupported character used");
-		}
-
-        let cdat = read_addr(old, CHARSIZEDATA_A[char as usize]);
+        let cdat = read_addr(old, if char >= 35 { CHARSIZEDATA_A[char as usize % 20] } else { CHARSIZEDATA_A[char as usize] });
         m.push(cdat.clone());
 
         let bullets = old + 0x17c;
