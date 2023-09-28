@@ -33,27 +33,14 @@ impl NetworkPacket {
 
         buf[11] = self.inputs.len() as u8; //inputs, confirms are the same length
 
-        if self.inputs.len() != self.confirms.len() {
-            panic!();
-        }
-
         for a in 0..self.inputs.len() {
             buf[(12 + a * 2)..(14 + a * 2)].copy_from_slice(&self.inputs[a].to_le_bytes());
         }
 
         let next = 12 + self.inputs.len() * 2;
 
-        for a in 0..self.inputs.len() {
-            buf[next + a] = {
-                if self.confirms[a] {
-                    1u8
-                } else {
-                    0u8
-                }
-            };
-        }
-
-        let next = next + self.inputs.len();
+        buf[next..next + 4].copy_from_slice(&self.last_confirm.to_le_bytes());
+        let next = next + 4;
         buf[next..next + 4].copy_from_slice(&self.sync.unwrap_or(i32::MAX).to_le_bytes());
 
         let last = next + 4;
@@ -71,12 +58,9 @@ impl NetworkPacket {
             .map(|x| u16::from_le_bytes(d[12 + x * 2..12 + (x + 1) * 2].try_into().unwrap()))
             .collect();
         let lastend = 12 + inputsize as usize * 2;
+        let last_confirm = usize::from_le_bytes(d[lastend..lastend + 4].try_into().unwrap());
 
-        let confirms = (0..inputsize as usize)
-            .map(|x| d[lastend + x] == 1)
-            .collect();
-
-        let lastend = lastend + inputsize as usize;
+        let lastend = lastend + 4 as usize;
         let syncraw = i32::from_le_bytes(d[lastend..lastend + 4].try_into().unwrap());
 
         let sync = match syncraw {
@@ -90,7 +74,7 @@ impl NetworkPacket {
             delay,
             max_rollback,
             inputs,
-            confirms,
+            last_confirm,
             sync,
         }
     }
@@ -105,12 +89,13 @@ pub enum FrameTimeData {
 }
 
 pub struct Netcoder {
-    confirms: HashSet<usize>,
+    last_opponent_confirm: usize,
 
     id: usize,
 
     //ideally we shouldn't be keeping a separate input stack from the Rollbacker but for now it's what I have
     opponent_inputs: Vec<Option<u16>>,
+    last_opponent_input: usize,
 
     inputs: Vec<u16>,
 
@@ -120,6 +105,7 @@ pub struct Netcoder {
     pub delay: usize,
     pub max_rollback: usize,
     pub display_stats: bool,
+    pub last_opponent_delay: usize,
 
     past_frame_starts: Vec<FrameTimeData>,
 
@@ -130,7 +116,7 @@ pub struct Netcoder {
 impl Netcoder {
     pub fn new(receiver: std::sync::mpsc::Receiver<(NetworkPacket, Instant)>) -> Self {
         Self {
-            confirms: HashSet::new(),
+            last_opponent_confirm: 0,
             inputs: Vec::new(),
 
             opponent_inputs: Vec::new(),
@@ -138,6 +124,8 @@ impl Netcoder {
             send_times: HashMap::new(),
             recv_delays: HashMap::new(),
 
+            last_opponent_delay: 0,
+            last_opponent_input: 0,
             id: 0,
             delay: 0,
             max_rollback: 0,
@@ -156,6 +144,7 @@ impl Netcoder {
         current_input: [bool; 10],
     ) -> u32 {
         let function_start_time = Instant::now();
+
         // self.id is lower than real framecount by 1, this is because we don't process frame 0
         while self.past_frame_starts.len() <= self.id {
             self.past_frame_starts.push(FrameTimeData::Empty);
@@ -199,6 +188,8 @@ impl Netcoder {
                     //self.delay = packet.delay as usize;
                     self.max_rollback = packet.max_rollback as usize;
                 }
+
+                self.last_opponent_delay = packet.delay as usize;
 
                 // is the first arrival of the newest packet
                 let last = self
@@ -311,6 +302,9 @@ impl Netcoder {
             }
             let mut fr = latest;
 
+            self.last_opponent_input = self.last_opponent_input.max(packet.id);
+            self.last_opponent_confirm = self.last_opponent_confirm.max(packet.last_confirm);
+
             for a in packet.inputs {
                 if self.opponent_inputs[fr].is_none() {
                     let el = self.send_times.get(&fr);
@@ -334,8 +328,6 @@ impl Netcoder {
                         .unwrap();
                     rollbacker.enemy_inputs.insert(inp, fr);
                 }
-
-                self.confirms.insert(fr);
 
                 if fr == 0 {
                     break;
@@ -378,9 +370,8 @@ impl Netcoder {
             delay: self.delay as u8,
             max_rollback: self.max_rollback as u8,
             inputs: ivec,
-            confirms: input_range
-                .map(|x| self.opponent_inputs.get(x).copied().flatten().is_some())
-                .collect(),
+            last_confirm: (self.last_opponent_input)
+                .min(self.id + 20),
             sync: past,
         };
 
@@ -398,9 +389,9 @@ impl Netcoder {
             m
         };
 
-        if rollbacker.guessed.len() > 10 {
-            panic!("WHAT");
-        }
+        //if rollbacker.guessed.len() > 13 {
+        //    panic!("WHAT 13");
+        //}
 
         unsafe {
             if self.display_stats {
@@ -420,11 +411,23 @@ impl Netcoder {
             }
         }
 
-        if !self
-            .confirms
-            .contains(&((self.id + 1).saturating_sub(self.max_rollback + self.delay)))
+        if self.id > self.last_opponent_confirm + 20 {
+            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
+            println!(
+                "frame is missing: m: {m}, id: {}, confirm: {}",
+                self.id, self.last_opponent_confirm
+            );
+            0
+        } else if self.id
+            > self.last_opponent_input
+                + self.max_rollback
+                + self.delay.min(self.last_opponent_delay)
         {
-            //info!("frame is missing: m: {m}, id: {}", self.id,);
+            crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
+            println!(
+                "frame is missing for reason 2: m: {m}, id: {}, confirm: {}",
+                self.id, self.last_opponent_confirm
+            );
             0
         } else {
             //no pause, perform additional operations here
@@ -450,9 +453,9 @@ impl Netcoder {
     }
 }
 
-unsafe fn send_packet(mut data: Box<[u8]>) {
+pub unsafe fn send_packet(mut data: Box<[u8]>) {
     //info!("sending packet");
-    data[0] = 0x69;
+    data[0] = 0x6b;
 
     let netmanager = *(0x8986a0 as *const usize);
 

@@ -246,15 +246,12 @@ static mut FORCE_SOUND_SKIP: bool = false;
 //this is getting bad, fix the redundancy
 //static INPUTS_RAW: Mutex<BTreeMap<usize, [u16; 2]>> = Mutex::new(BTreeMap::new());
 
-static mut SPECTATOR_LAST_FRAMECOUNT: u32 = 0;
-static mut SPECTATOR_NEXT_INPUT: u16 = 0;
-
 static mut SPIN_TIME_MICROSECOND: i128 = 0;
 
 static mut F62_ENABLED: bool = false;
 
-const VERSION_BYTE_60: u8 = 0x69;
-const VERSION_BYTE_62: u8 = 0x6a;
+const VERSION_BYTE_60: u8 = 0x6b;
+const VERSION_BYTE_62: u8 = 0x6c;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -547,17 +544,17 @@ fn truer_exec(filename: Option<PathBuf>) {
         }
 
         if let Some(manager) = SOUND_MANAGER.as_mut() {
-            println!(
-                "trying to play sound {} at frame {} with rollback {}",
-                soundid,
-                *SOKU_FRAMECOUNT,
-                manager.current_rollback.is_some()
-            );
+            //println!(
+            //    "trying to play sound {} at frame {} with rollback {}",
+            //    soundid,
+            //    *SOKU_FRAMECOUNT,
+            //    manager.current_rollback.is_some()
+            //);
             if manager.insert_sound(*SOKU_FRAMECOUNT, soundid) {
-                println!("sound accepted");
+                //println!("sound accepted");
                 0x401d58
             } else {
-                println!("sound rejected because it was already present");
+                //println!("sound rejected because it was already present");
                 0x401db7
             }
         } else {
@@ -715,7 +712,7 @@ fn truer_exec(filename: Option<PathBuf>) {
     ) -> usize {
         let framecount_cur = *(((*a).esi + 0x4c) as *const u32);
         let edi = (*a).edi;
-        SPECTATOR_LAST_FRAMECOUNT = edi;
+
         //println!("edi: {}, framecount: {}", edi, framecount_cur);
         let no_skip = edi + 16 < framecount_cur && BATTLE_STARTED;
         if no_skip {
@@ -980,7 +977,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //    TARGET_OFFSET.store(0, Relaxed);
         //}
 
-        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-200, 1000);
+        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-100, 2000);
         //TARGET_OFFSET.fetch_add(s / 2, Relaxed);
         *target += (target_frametime + s) as u128;
 
@@ -994,9 +991,13 @@ fn truer_exec(filename: Option<PathBuf>) {
         //info!("frame diff micro diff: {}", diff);
         let ddiff = (diff / 1000) as i32;
         if ddiff < 0 {
+            println!("frameskip");
             #[cfg(feature = "logtofile")]
             info!("frameskip {diff}");
-            *target = cur + (target_frametime) as u128;
+            if ddiff > 2 {
+                *target = cur + (target_frametime) as u128;
+            } else {
+            }
         } else {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
@@ -1192,7 +1193,7 @@ unsafe extern "cdecl" fn reallochook(a: *mut ilhook::x86::Registers, _b: usize) 
 
 use core::sync::atomic::AtomicU8;
 
-static LAST_STATE: AtomicU8 = AtomicU8::new(0x69);
+static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
 
 fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
     if *battle_state != 4 {
@@ -1204,10 +1205,10 @@ fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
 fn resume(battle_state: &mut u32) {
     // should be called every frame because fo the logic set in fn pause involving state_sub_count
     let last = LAST_STATE.load(Relaxed);
-    if last != 0x69 && *battle_state == 4 {
+    if last != 0x6b && *battle_state == 4 {
         //4 check to not accidentally override a state set by the game *maybe*
         *battle_state = last as u32;
-        LAST_STATE.store(0x69, Relaxed)
+        LAST_STATE.store(0x6b, Relaxed)
     }
 }
 //        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
@@ -1246,7 +1247,15 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //   let input1 = slic[8];
     //   let input2 = slic[9];
 
-    if type1 == 0x69 {
+    if type1 == 0x6c {
+        crate::netcode::send_packet(Box::new([0x6d, 0x060]));
+        (*a).eax = 0x400;
+    }
+    if type1 > 0x6c && type1 <= 0x80  {
+        (*a).eax = 0x400;
+    }
+
+    if type1 == 0x6b {
         let z = NetworkPacket::decode(slic);
         let m = DISABLE_SEND.load(Relaxed);
 
@@ -1688,7 +1697,6 @@ unsafe fn handle_online(
     LAST_TOGGLE = stat_toggle;
 
     if *cur_speed_iter == 0 {
-        
         let k_up = read_key_better(INCREASE_DELAY_KEY);
         let k_down = read_key_better(DECREASE_DELAY_KEY);
 
@@ -1708,7 +1716,6 @@ unsafe fn handle_online(
         }
         LAST_DELAY_VALUE = netcoder.delay;
         LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
-
 
         let input = read_current_input();
         let speed = netcoder.process_and_send(rollbacker, input);
