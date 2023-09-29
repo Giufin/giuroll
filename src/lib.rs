@@ -232,7 +232,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.0";
+const VER: &str = "0.6.1";
 
 unsafe extern "cdecl" fn skip(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -746,6 +746,14 @@ fn truer_exec(filename: Option<PathBuf>) {
         if let Some(x) = NEXT_DRAW_PING {
             draw_num((320.0, 466.0), x);
         }
+        if let Some(x) = NEXT_DRAW_ROLLBACK {
+            draw_num((340.0, 466.0), x);
+        }
+
+        if let Some(x) = NEXT_DRAW_ENEMY_DELAY {
+            draw_num((20.0, 466.0), x);
+        }
+        
     }
 
     let new =
@@ -977,7 +985,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //    TARGET_OFFSET.store(0, Relaxed);
         //}
 
-        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-100, 2000);
+        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-500, 2000);
         //TARGET_OFFSET.fetch_add(s / 2, Relaxed);
         *target += (target_frametime + s) as u128;
 
@@ -1074,6 +1082,9 @@ unsafe fn set_input_buffer(input: [bool; 10], input2: [bool; 10]) {
 static REQUESTED_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 static mut NEXT_DRAW_PING: Option<i32> = None;
+static mut NEXT_DRAW_ROLLBACK: Option<i32> = None;
+static mut NEXT_DRAW_ENEMY_DELAY: Option<i32> = None;
+
 static mut NEXT_DRAW_PACKET_LOSS: Option<i32> = None;
 static mut NEXT_DRAW_PACKET_DESYNC: Option<i32> = None;
 

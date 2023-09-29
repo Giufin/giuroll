@@ -189,6 +189,7 @@ impl Netcoder {
                     self.max_rollback = packet.max_rollback as usize;
                 }
 
+                unsafe { crate::NEXT_DRAW_ENEMY_DELAY = Some(packet.delay as i32) };
                 self.last_opponent_delay = packet.delay as usize;
 
                 // is the first arrival of the newest packet
@@ -252,6 +253,7 @@ impl Netcoder {
                 if let Some(remote) = packet.sync {
                     //info!("frame diff {}", remote);
                     if remote < 0 {
+                        println!("remote is wrong");
                         TARGET_OFFSET.fetch_add(-remote.max(-5000), Relaxed);
                     } else {
                         match self
@@ -262,9 +264,14 @@ impl Netcoder {
                                 let diff = *local - remote;
                                 //println!("frame diff {}", diff);
 
-                                let diff = if diff.abs() < 1000 { diff / 10 } else { diff };
-
-                                TARGET_OFFSET.fetch_add(diff / 50, Relaxed);
+                                let diff = if diff.abs() < 20000 {
+                                    diff / 100
+                                } else {
+                                    diff / 10
+                                };
+                                if diff > 500 {
+                                    TARGET_OFFSET.fetch_add(diff / 50, Relaxed);
+                                }
                             }
                             Some(FrameTimeData::RemoteFirst(_)) => {
                                 //println!("frame diff: remote first");
@@ -370,8 +377,7 @@ impl Netcoder {
             delay: self.delay as u8,
             max_rollback: self.max_rollback as u8,
             inputs: ivec,
-            last_confirm: (self.last_opponent_input)
-                .min(self.id + 20),
+            last_confirm: (self.last_opponent_input).min(self.id + 20),
             sync: past,
         };
 
@@ -403,11 +409,14 @@ impl Netcoder {
                         }
                     }
                     crate::NEXT_DRAW_PING = Some((sum / 60_000) as i32);
+                    crate::NEXT_DRAW_ROLLBACK = Some(m as i32);
                 } else if crate::NEXT_DRAW_PING.is_none() {
-                    crate::NEXT_DRAW_PING = Some(0)
+                    crate::NEXT_DRAW_PING = Some(0);
+                    crate::NEXT_DRAW_ROLLBACK = Some(m as i32);
                 }
             } else {
                 crate::NEXT_DRAW_PING = None;
+                crate::NEXT_DRAW_ROLLBACK = None;
             }
         }
 
