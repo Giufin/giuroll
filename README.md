@@ -38,7 +38,7 @@ When building from source please remember to add the `--release`/`-r` flag.
 - Game desynced: I'm planning on adding a desync detector to make debugging desyncs easier, but since desyncs also occur with SokuRoll there is no guarantee they are caused solely by the rollback. If the desyncs are common, persists between game restarts, and are not appearing with Sokuroll, you can contact me about it.
 
 
-you can contact me about any issues through discord: `@giufin` in DMs or in the hisouten sever.
+you can contact me about any issues through discord: `@giufin` in DMs.
 
 ### Special thanks to:
 
