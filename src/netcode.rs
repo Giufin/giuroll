@@ -110,6 +110,8 @@ pub struct Netcoder {
     past_frame_starts: Vec<FrameTimeData>,
 
     pub receiver: std::sync::mpsc::Receiver<(NetworkPacket, Instant)>,
+    time_syncs: Vec<i32>,
+    last_median_sync: i32,
 }
 
 /// The packets are only sent once per frame; a packet contains all previous unconfirmed inputs; a lost "main" packet is not recovered whenever it's not neccesseary
@@ -133,6 +135,9 @@ impl Netcoder {
 
             past_frame_starts: Vec::new(),
             receiver,
+
+            time_syncs: vec![],
+            last_median_sync: 0,
         }
     }
 
@@ -189,7 +194,12 @@ impl Netcoder {
                     self.max_rollback = packet.max_rollback as usize;
                 }
 
-                unsafe { crate::NEXT_DRAW_ENEMY_DELAY = Some(packet.delay as i32) };
+                if self.display_stats {
+                    unsafe { crate::NEXT_DRAW_ENEMY_DELAY = Some(packet.delay as i32) };
+                } else {
+                    unsafe { crate::NEXT_DRAW_ENEMY_DELAY = None };
+                }
+
                 self.last_opponent_delay = packet.delay as usize;
 
                 // is the first arrival of the newest packet
@@ -253,25 +263,21 @@ impl Netcoder {
                 if let Some(remote) = packet.sync {
                     //info!("frame diff {}", remote);
                     if remote < 0 {
-                        println!("remote is wrong");
                         TARGET_OFFSET.fetch_add(-remote.max(-5000), Relaxed);
                     } else {
                         match self
                             .past_frame_starts
-                            .get(packet.id.saturating_sub((packet.max_rollback) as usize))
+                            .get(packet.id.saturating_sub((packet.inputs.len()) as usize))
                         {
                             Some(FrameTimeData::Done(local)) => {
                                 let diff = *local - remote;
-                                //println!("frame diff {}", diff);
 
-                                let diff = if diff.abs() < 20000 {
-                                    diff / 100
-                                } else {
-                                    diff / 10
-                                };
-                                if diff > 500 {
-                                    TARGET_OFFSET.fetch_add(diff / 50, Relaxed);
+                                while packet.id > self.time_syncs.len() {
+                                    self.time_syncs.push(0);
                                 }
+                                self.time_syncs.push(diff);
+
+                                //TARGET_OFFSET.fetch_add(diff, Relaxed);
                             }
                             Some(FrameTimeData::RemoteFirst(_)) => {
                                 //println!("frame diff: remote first");
@@ -310,15 +316,19 @@ impl Netcoder {
             let mut fr = latest;
 
             self.last_opponent_input = self.last_opponent_input.max(packet.id);
+
+            for a in self.last_opponent_confirm..packet.last_confirm {
+                let el = self.send_times.get(&a);
+                if let Some(&x) = el {
+                    let x = time.saturating_duration_since(x);
+                    self.recv_delays.insert(fr, x);
+                }
+            }
+
             self.last_opponent_confirm = self.last_opponent_confirm.max(packet.last_confirm);
 
             for a in packet.inputs {
                 if self.opponent_inputs[fr].is_none() {
-                    let el = self.send_times.get(&fr);
-                    if let Some(&x) = el {
-                        let x = time.saturating_duration_since(x);
-                        self.recv_delays.insert(fr, x);
-                    }
                     //println!("{:?}", self.send_times[fr].elapsed());
 
                     let inp_a = a;
@@ -345,7 +355,7 @@ impl Netcoder {
 
         let input_head = self.id;
 
-        let input_range = self.id.saturating_sub(20)..=input_head;
+        let input_range = self.last_opponent_confirm..=input_head;
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
@@ -359,10 +369,9 @@ impl Netcoder {
         let mut ivec = self.inputs[input_range.clone()].to_vec();
         ivec.reverse();
 
-        let past = match self
-            .past_frame_starts
-            .get(self.id.saturating_sub(self.max_rollback))
-        {
+        
+
+        let past = match self.past_frame_starts.get(self.id.saturating_sub(30)) {
             Some(FrameTimeData::Done(x)) => Some(*x),
             _ => None,
         };
@@ -377,7 +386,7 @@ impl Netcoder {
             delay: self.delay as u8,
             max_rollback: self.max_rollback as u8,
             inputs: ivec,
-            last_confirm: (self.last_opponent_input).min(self.id + 20),
+            last_confirm: (self.last_opponent_input).min(self.id + 30),
             sync: past,
         };
 
@@ -395,11 +404,16 @@ impl Netcoder {
             m
         };
 
+        //println!("m: {m}");
+
         //if rollbacker.guessed.len() > 13 {
         //    panic!("WHAT 13");
         //}
 
         unsafe {
+            let m2 = rollbacker.guessed.len();
+            
+
             if self.display_stats {
                 if self.id % 60 == 0 && self.id > 0 {
                     let mut sum = 0;
@@ -408,11 +422,11 @@ impl Netcoder {
                             sum += x.as_micros();
                         }
                     }
-                    crate::NEXT_DRAW_PING = Some((sum / 60_000) as i32);
-                    crate::NEXT_DRAW_ROLLBACK = Some(m as i32);
+                    crate::NEXT_DRAW_PING = Some((sum / (60_000 * 2)) as i32);
+                    crate::NEXT_DRAW_ROLLBACK = Some(m2 as i32);
                 } else if crate::NEXT_DRAW_PING.is_none() {
                     crate::NEXT_DRAW_PING = Some(0);
-                    crate::NEXT_DRAW_ROLLBACK = Some(m as i32);
+                    crate::NEXT_DRAW_ROLLBACK = Some(m2 as i32);
                 }
             } else {
                 crate::NEXT_DRAW_PING = None;
@@ -420,7 +434,50 @@ impl Netcoder {
             }
         }
 
-        if self.id > self.last_opponent_confirm + 20 {
+        //time sync
+        const TIME_SYNC_MEDIAN_INTERVAL: usize = 50;
+        if self.id % TIME_SYNC_MEDIAN_INTERVAL == 0 && self.id > (TIME_SYNC_MEDIAN_INTERVAL + 30) {
+            match self
+                .time_syncs
+                .get((self.id - 30 - TIME_SYNC_MEDIAN_INTERVAL)..(self.id - 30))
+                .map(|x| {
+                    let ret: Result<[i32; TIME_SYNC_MEDIAN_INTERVAL], _> = x.try_into();
+                    ret.ok()
+                })
+                .flatten()
+            {
+                Some(mut av) => {
+                    av.sort();
+
+                    //let median = (av[TIME_SYNC_MEDIAN_INTERVAL / 2 - 1]
+                    //    + av[TIME_SYNC_MEDIAN_INTERVAL / 2])
+                    //    / 2;
+                    //println!("median: {median}");
+                    let sum: i32 = av[3..TIME_SYNC_MEDIAN_INTERVAL - 3].iter().sum();
+                    let average = sum / (TIME_SYNC_MEDIAN_INTERVAL as i32 - 6);
+                    println!("average: {average}");
+
+                    self.last_median_sync = average;
+                }
+                None => (),
+            }
+        }
+        if self.last_median_sync.abs() > 20000 {
+            TARGET_OFFSET.fetch_add(self.last_median_sync / 700, Relaxed);
+        } else if self.last_median_sync.abs() > 10000 {
+            TARGET_OFFSET.fetch_add(self.last_median_sync / 1400, Relaxed);
+        } else if self.last_median_sync.abs() > 2000 {
+            TARGET_OFFSET.fetch_add(self.last_median_sync / 2000, Relaxed);
+        } else {
+            let res = if self.last_median_sync.abs() > 500 {
+                self.last_median_sync.clamp(-1, 1)
+            } else {
+                0
+            };
+            TARGET_OFFSET.fetch_add(res, Relaxed);
+        }
+
+        if self.id > self.last_opponent_confirm + 30 {
             //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
             println!(
                 "frame is missing: m: {m}, id: {}, confirm: {}",
