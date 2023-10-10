@@ -433,9 +433,9 @@ impl Netcoder {
                 crate::NEXT_DRAW_ROLLBACK = None;
             }
 
-            if self.autodelay_enabled && self.id < 300 && self.id > 60 && self.id % 60 == 0 {
+            if self.autodelay_enabled && self.id == 300 {
                 let id = self.id - 60;
-                let iter = (id - 60..id)
+                let iter = (id - 200..id)
                     .map(|x| self.recv_delays.get(&x))
                     .filter_map(|x| x)
                     .map(|x| x.as_micros());
