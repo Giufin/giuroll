@@ -2,15 +2,15 @@
 use log::info;
 use std::{
     arch::asm,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     ffi::c_void,
 };
 
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
-    force_sound_skip, input_to_accum, set_input_buffer, ALLOCMUTEX, FREEMUTEX, ISDEBUG,
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
+    set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
+    SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];

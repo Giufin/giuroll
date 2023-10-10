@@ -112,6 +112,8 @@ pub struct Netcoder {
     pub receiver: std::sync::mpsc::Receiver<(NetworkPacket, Instant)>,
     time_syncs: Vec<i32>,
     last_median_sync: i32,
+
+    pub autodelay_enabled: bool,
 }
 
 /// The packets are only sent once per frame; a packet contains all previous unconfirmed inputs; a lost "main" packet is not recovered whenever it's not neccesseary
@@ -138,6 +140,7 @@ impl Netcoder {
 
             time_syncs: vec![],
             last_median_sync: 0,
+            autodelay_enabled: false,
         }
     }
 
@@ -369,8 +372,6 @@ impl Netcoder {
         let mut ivec = self.inputs[input_range.clone()].to_vec();
         ivec.reverse();
 
-        
-
         let past = match self.past_frame_starts.get(self.id.saturating_sub(30)) {
             Some(FrameTimeData::Done(x)) => Some(*x),
             _ => None,
@@ -412,7 +413,6 @@ impl Netcoder {
 
         unsafe {
             let m2 = rollbacker.guessed.len();
-            
 
             if self.display_stats {
                 if self.id % 60 == 0 && self.id > 0 {
@@ -431,6 +431,19 @@ impl Netcoder {
             } else {
                 crate::NEXT_DRAW_PING = None;
                 crate::NEXT_DRAW_ROLLBACK = None;
+            }
+
+            if self.autodelay_enabled && self.id < 300 && self.id > 60 && self.id % 60 == 0 {
+                let id = self.id - 60;
+                let iter = (id - 60..id)
+                    .map(|x| self.recv_delays.get(&x))
+                    .filter_map(|x| x)
+                    .map(|x| x.as_micros());
+
+                let (count, sum) = iter.fold((0, 0), |x, y| (x.0 + 1, x.1 + y));
+                let avg = sum / count;
+                println!("avg: {}", avg);
+                self.delay = ((avg / (1_000_000 / 30)) as usize).min(9);
             }
         }
 
