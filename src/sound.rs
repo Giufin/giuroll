@@ -13,7 +13,7 @@ impl RollbackSoundManager {
         Self {
             sounds_that_did_happen: HashMap::new(),
             sounds_that_maybe_happened: HashMap::new(),
-            current_rollback: None
+            current_rollback: None,
         }
     }
 
@@ -25,30 +25,29 @@ impl RollbackSoundManager {
         //        return false;
         //    }
         //}
+
         let s = self
             .sounds_that_did_happen
             .entry(frame)
             .or_insert_with(|| Vec::new());
         s.push(sound);
 
-        if self
-            .sounds_that_maybe_happened
+        self.sounds_that_maybe_happened
             .values()
             .map(|x| x.iter())
             .flatten()
             .find(|x| **x == sound)
-            .is_some()
-        {
-            return false;
-        }
-        
-
-
-        true
+            .is_none()
     }
 
     pub fn pop_sounds_since(&mut self, from: usize, to: usize) {
-        self.current_rollback = Some(from);
+        //println!("popping sounds from {from} to {to}");
+
+        match std::mem::replace(&mut self.current_rollback, Some(from)) {
+            Some(x) => println!("should have crashed sound 45"),
+            None => (),
+        };
+
         for a in from..=to {
             if let Some(old_sounds) = self.sounds_that_did_happen.remove(&a) {
                 self.sounds_that_maybe_happened.insert(a, old_sounds);
@@ -69,25 +68,43 @@ impl RollbackSoundManager {
         };
 
         let new_sounds: HashSet<usize> = (old..=fc)
-            .flat_map(|x| self.sounds_that_did_happen.get(&x))
-            .map(|x| x.iter())
+            .flat_map(|x| self.sounds_that_did_happen.remove(&x))
+            .map(|x| x.into_iter())
             .flatten()
-            .cloned()
             .collect();
 
-
         for (frame, sound) in old_sounds
-            .iter()
+            .into_iter()
             .map(|(frame, sounds)| sounds.into_iter().map(move |x| (frame, x)))
             .flatten()
         {
             //to do: not only delete sounds, but also restart them/shift them
-            if !new_sounds.contains(sound) {
-                force_sound_skip(*sound);
-                println!("sound {} deleted at frame {}", sound, unsafe {
-                    *SOKU_FRAMECOUNT
-                });
+
+            if !new_sounds.contains(&sound) {
+                let played_recently = (old.saturating_sub(5)..old)
+                    .filter_map(|x| self.sounds_that_did_happen.get(&x))
+                    .map(|x| x.iter())
+                    .flatten()
+                    .find(|x| **x == sound)
+                    .is_some();
+
+                if !played_recently {
+                    force_sound_skip(sound);
+
+                    /*println!(
+                        "sound {}, from frame {} deleted at frame {}",
+                        sound,
+                        frame,
+                        unsafe { *SOKU_FRAMECOUNT },
+                    ); */
+                } else {
+                    //println!("sound {} would have been skipped but wasnt", sound)
+                }
             } else {
+                self.sounds_that_did_happen
+                    .entry(frame)
+                    .or_insert_with(|| Vec::new())
+                    .push(sound)
                 //self.insert_sound(*frame, *sound);
                 //println!("sound retained");
             }

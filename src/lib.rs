@@ -1,4 +1,6 @@
 #![feature(abi_thiscall)]
+#![feature(let_chains)]
+
 use core::panic;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -225,7 +227,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.4";
+const VER: &str = "0.6.5";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -450,6 +452,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         _c: usize,
     ) -> usize {
         //let sw = REQUESTED_THREAD_ID.swap(0, Relaxed);
+
         (*a).ecx = 0x89f9f8;
         (*a).eax = *(((*a).esp + 4) as *const u32);
         let soundid = (*a).eax as usize;
@@ -458,7 +461,8 @@ fn truer_exec(filename: Option<PathBuf>) {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
         }
 
-        if let Some(manager) = SOUND_MANAGER.as_mut() {
+        if let Some(manager) = SOUND_MANAGER.as_mut() && !FORCE_SOUND_SKIP{
+
             //println!(
             //    "trying to play sound {} at frame {} with rollback {}",
             //    soundid,
@@ -466,10 +470,10 @@ fn truer_exec(filename: Option<PathBuf>) {
             //    manager.current_rollback.is_some()
             //);
             if manager.insert_sound(*SOKU_FRAMECOUNT, soundid) {
-                //println!("sound accepted");
+                //println!("sound {} accepted at frame {}", soundid, *SOKU_FRAMECOUNT);
                 0x401d58
             } else {
-                //println!("sound rejected because it was already present");
+                //println!("sound {} rejected at frame {} because it was already present", soundid, *SOKU_FRAMECOUNT);
                 0x401db7
             }
         } else {
@@ -528,7 +532,7 @@ fn truer_exec(filename: Option<PathBuf>) {
     };
     std::mem::forget(new);
 
-    unsafe extern "cdecl" fn onexit(a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn onexit(_a: *mut ilhook::x86::Registers, _b: usize) {
         REQUESTED_THREAD_ID.store(0, Relaxed);
         NEXT_DRAW_PING = None;
 
@@ -542,7 +546,7 @@ fn truer_exec(filename: Option<PathBuf>) {
         //SOUND_THAT_MAYBE_HAPPEN.lock().unwrap().clear();
 
         //INPUTS_RAW.lock().unwrap().clear();
-        let heap = unsafe { *(0x89b404 as *const isize) };
+        let _heap = unsafe { *(0x89b404 as *const isize) };
 
         // we should be removing allocations that happen during frames which were rolled back, but that somehow breaks it, possibly because of some null check initializations
         //let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
@@ -570,6 +574,32 @@ fn truer_exec(filename: Option<PathBuf>) {
         NEXT_DRAW_ROLLBACK = None;
         NEXT_DRAW_ENEMY_DELAY = None;
     }
+
+    //no_ko_sound
+    /*
+    explanation:
+    sometimes rollback falsely cancels the KO sound. I believe this is because it's triggered from two different sites, and one of them, 0x6dcc0c
+    seems to be triggered from a destructor. ~~The object whose destructor is cleared up here is likely overriden, and sokuroll does not restore that particular reference, because
+    it's usually not relevant to rollback~~. After some experimenting I cannot find a cause for why the sound is called from two callsites, but no matter which one
+    I remove the issue persist. It is also possible that instead of incorrect rollback, the sound is called before the frame, which is highly unusual for a sound,
+    but so is having 2 call sites, that's why I think that's the most likely explanation.
+    Sokuroll likely had an exception for the KO sound since usually it would never roll back that particualar sound, but I couldn't find a reference to it
+    in the decompiled code. Here we simply remove that sound from it's 2 separate, unrelated callsites, and call it once, from a callsite that makes more sense.
+    that callsite (can be found by searching no_ko in this file) is triggered not on the first frame after a knockdown, but on the second one, which is how it seems to work
+    in vanilla game
+    */
+    unsafe {
+        for addr in [0x6d8288, 0x6dcc0c] {
+            let mut previous = PAGE_PROTECTION_FLAGS(0);
+            VirtualProtect(
+                addr as *const c_void,
+                1,
+                PAGE_PROTECTION_FLAGS(0x40),
+                &mut previous,
+            );
+            *(addr as *mut u8) = 0x80;
+        }
+    };
 
     let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(onexit), 0).hook(6) };
     std::mem::forget(new);
@@ -1013,8 +1043,8 @@ static mut NEXT_DRAW_PING: Option<i32> = None;
 static mut NEXT_DRAW_ROLLBACK: Option<i32> = None;
 static mut NEXT_DRAW_ENEMY_DELAY: Option<i32> = None;
 
-static mut NEXT_DRAW_PACKET_LOSS: Option<i32> = None;
-static mut NEXT_DRAW_PACKET_DESYNC: Option<i32> = None;
+static mut _NEXT_DRAW_PACKET_LOSS: Option<i32> = None;
+static mut _NEXT_DRAW_PACKET_DESYNC: Option<i32> = None;
 
 const SOKU_FRAMECOUNT: *mut usize = 0x8985d8 as *mut usize;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -1532,6 +1562,7 @@ unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize
     //REQUESTED_THREAD_ID.store(0, Relaxed);
 }
 
+
 unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     //println!("GAMETYPE TRUE {}", *(0x8986a0 as *const usize));
     #[cfg(feature = "logtofile")]
@@ -1539,8 +1570,6 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     //REQUESTED_THREAD_ID.store(0, Relaxed);
 
     let framecount = *SOKU_FRAMECOUNT;
-
-    read_current_input();
 
     let state_sub_count: &mut u32;
     let battle_state: &mut u32;
@@ -1559,7 +1588,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     let gametype_main = *(0x898688 as *const usize);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
 
-    //println!("{:?}", (gametype_main, is_netplay));
+    //println!("{:?}", (*battle_state, *state_sub_count));
 
     match (gametype_main, is_netplay) {
         (2, false) => {
@@ -1593,5 +1622,16 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
             }
         }
         _ => (),
+    }
+
+    if matches!(*battle_state, 3 | 5) {
+        // together with the no_ko_sound hook. Explanation in the no_ko_sound hook.
+        //IS_KO = true;
+        if *state_sub_count == 1 {
+            //println!("on KO");
+            std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x439490)(0x2c);
+        }
+    } else {
+        //IS_KO = false;
     }
 }
