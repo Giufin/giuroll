@@ -4,9 +4,10 @@
 use core::panic;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    ffi::c_void,
+    ffi::{c_void, OsStr},
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -181,13 +182,30 @@ use winapi::um::libloaderapi::GetModuleFileNameW;
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 
+// calling convention here was changed from cdecl to C because of the requirements of the new library. Thankfully they appear to be aliases in the current ABI
 #[no_mangle]
-pub unsafe extern "cdecl" fn exeinit() {
-    truer_exec(Some(std::env::current_dir().unwrap()));
+pub unsafe extern "C" fn exeinit() {
+    truer_exec(std::env::current_dir().unwrap());
+}
+
+//if I don't pass the path like this I get an "access violation". The library I'm using for the injection does mention that arguments must be Copy
+static mut EXE_INIT_PATH: Vec<u8> = Vec::new();
+#[no_mangle]
+pub unsafe extern "C" fn better_exe_init_push_path(s: u8) {
+    EXE_INIT_PATH.push(s);
 }
 
 #[no_mangle]
-pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
+pub unsafe extern "C" fn better_exe_init() -> bool {
+    let os = OsStr::from_encoded_bytes_unchecked(&EXE_INIT_PATH);
+
+    truer_exec(PathBuf::from(os))
+        .or_else(|| truer_exec(std::env::current_dir().unwrap()))
+        .is_some()
+}
+
+#[no_mangle]
+pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
     let mut dat = [0u16; 1025];
     unsafe {
         GetModuleFileNameW(
@@ -203,7 +221,7 @@ pub extern "cdecl" fn Initialize(dllmodule: HMODULE) -> bool {
     //let m = init(0);
     let mut filepath = Path::new(&s).to_owned();
     filepath.pop();
-    truer_exec(Some(filepath));
+    truer_exec(filepath);
     true
 }
 //687040 true real input buffer manipulation
@@ -259,20 +277,26 @@ pub fn force_sound_skip(soundid: usize) {
     }
 }
 
-fn truer_exec(filename: Option<PathBuf>) {
-    #[cfg(feature = "logtofile")]
-    {
-        set_up_fern().unwrap();
-        info!("here");
-    }
-
+//returns None on .ini errors
+fn truer_exec(filename: PathBuf) -> Option<()> {
     #[cfg(feature = "allocconsole")]
     unsafe {
         AllocConsole();
     }
 
+    let mut filepath = filename;
+    filepath.push("giuroll.ini");
+    //println!("{:?}", filepath);
+
+    let conf = mininip::parse::parse_file(filepath).ok()?;
+
     #[cfg(feature = "logtofile")]
-    std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
+    {
+        set_up_fern().unwrap();
+        info!("here");
+        std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
+        let _ = set_up_fern();
+    }
 
     unsafe {
         let (s, r) = std::sync::mpsc::channel();
@@ -288,121 +312,110 @@ fn truer_exec(filename: Option<PathBuf>) {
         MEMORY_SENDER_ALLOC = Some(s);
     }
 
-    #[cfg(feature = "logtofile")]
-    let _ = set_up_fern();
-    if let Some(mut filepath) = filename {
-        filepath.push("giuroll.ini");
+    fn read_ini_bool(
+        conf: &HashMap<Identifier, Value>,
+        section: &str,
+        key: &str,
+        default: bool,
+    ) -> bool {
+        conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
+            .map(|x| match x {
+                Value::Bool(x) => *x,
+                _ => todo!("non bool .ini entry"),
+            })
+            .unwrap_or(default)
+    }
 
-        println!("{:?}", filepath);
-        let conf = mininip::parse::parse_file(filepath).unwrap();
+    fn read_ini_int_hex(
+        conf: &HashMap<Identifier, Value>,
+        section: &str,
+        key: &str,
+        default: i64,
+    ) -> i64 {
+        conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
+            .map(|x| match x {
+                Value::Int(x) => *x,
+                Value::Raw(x) | Value::Str(x) => {
+                    i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
+                }
+                _ => todo!("non integer .ini entry"),
+            })
+            .unwrap_or(default)
+    }
 
-        fn read_ini_bool(
-            conf: &HashMap<Identifier, Value>,
-            section: &str,
-            key: &str,
-            default: bool,
-        ) -> bool {
-            conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
-                .map(|x| match x {
-                    Value::Bool(x) => *x,
-                    _ => todo!("non bool .ini entry"),
-                })
-                .unwrap_or(default)
-        }
+    fn read_ini_string(
+        conf: &HashMap<Identifier, Value>,
+        section: &str,
+        key: &str,
+        default: String,
+    ) -> String {
+        conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
+            .map(|x| match x {
+                Value::Str(x) => x.clone(),
+                _ => todo!("non string .ini entry"),
+            })
+            .unwrap_or(default)
+    }
 
-        fn read_ini_int_hex(
-            conf: &HashMap<Identifier, Value>,
-            section: &str,
-            key: &str,
-            default: i64,
-        ) -> i64 {
-            conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
-                .map(|x| match x {
-                    Value::Int(x) => *x,
-                    Value::Raw(x) | Value::Str(x) => {
-                        i64::from_str_radix(x.strip_prefix("0x").unwrap(), 16).unwrap()
-                    }
-                    _ => todo!("non integer .ini entry"),
-                })
-                .unwrap_or(default)
-        }
+    let inc = read_ini_int_hex(&conf, "Keyboard", "increase_delay_key", 0);
+    let dec = read_ini_int_hex(&conf, "Keyboard", "decrease_delay_key", 0);
+    let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
+    let spin = read_ini_int_hex(&conf, "FramerateFix", "spin_amount", 1500);
+    let network_menu = read_ini_bool(&conf, "Misc", "enable_network_stats_by_default", false);
+    let default_delay = read_ini_int_hex(&conf, "Misc", "default_delay", 2).clamp(0, 9);
+    let f62_enabled = read_ini_bool(&conf, "FramerateFix", "enable_f62", cfg!(feature = "f62"));
+    let autodelay_enabled = read_ini_bool(&conf, "Misc", "enable_auto_delay", true);
 
-        fn read_ini_string(
-            conf: &HashMap<Identifier, Value>,
-            section: &str,
-            key: &str,
-            default: String,
-        ) -> String {
-            conf.get(&Identifier::new(Some(section.to_string()), key.to_string()))
-                .map(|x| match x {
-                    Value::Str(x) => x.clone(),
-                    _ => todo!("non string .ini entry"),
-                })
-                .unwrap_or(default)
-        }
-
-        let inc = read_ini_int_hex(&conf, "Keyboard", "increase_delay_key", 0);
-        let dec = read_ini_int_hex(&conf, "Keyboard", "decrease_delay_key", 0);
-        let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
-        let spin = read_ini_int_hex(&conf, "FramerateFix", "spin_amount", 1500);
-        let network_menu = read_ini_bool(&conf, "Misc", "enable_network_stats_by_default", false);
-        let default_delay = read_ini_int_hex(&conf, "Misc", "default_delay", 2).clamp(0, 9);
-        let f62_enabled = read_ini_bool(&conf, "FramerateFix", "enable_f62", cfg!(feature = "f62"));
-        let autodelay_enabled = read_ini_bool(&conf, "Misc", "enable_auto_delay", true);
-
-        let auto_delay_bias = read_ini_int_hex(&conf, "Misc", "auto_delay_bias", 0);
-        dbg!(auto_delay_bias);
-        let verstr: String = if f62_enabled {
-            format!("{}CN", VER)
-        } else {
-            format!("{}", VER)
-        };
-        let mut title = read_ini_string(
-            &conf,
-            "Misc",
-            "game_title",
-            format!("Soku with giuroll {} :YoumuSleep:", verstr),
-        );
-        title.push('\0');
-
-        let verstr = format!("Giuroll {}", verstr);
-
-        let title = title.replace('$', &verstr);
-
-        let tleak = Box::leak(Box::new(title));
-        //let bxd = tleak.encode_utf16().collect::<Box<_>>();
-        //println!("bxd: {:?}", bxd);
-
-        unsafe {
-            TITLE = Box::leak(tleak.encode_utf16().collect::<Box<_>>());
-            F62_ENABLED = f62_enabled;
-            SPIN_TIME_MICROSECOND = spin as i128;
-            INCREASE_DELAY_KEY = inc as u8;
-            DECREASE_DELAY_KEY = dec as u8;
-            TOGGLE_STAT_KEY = net as u8;
-            TOGGLE_STAT = network_menu;
-            LAST_DELAY_VALUE = default_delay as usize;
-            DEFAULT_DELAY_VALUE = default_delay as usize;
-            AUTODELAY_ENABLED = autodelay_enabled;
-        }
-
-        unsafe {
-            let mut b = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                0x858b80 as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut b,
-            );
-
-            *(0x858b80 as *mut u8) = if F62_ENABLED {
-                VERSION_BYTE_62
-            } else {
-                VERSION_BYTE_60
-            };
-        }
+    let auto_delay_bias = read_ini_int_hex(&conf, "Misc", "auto_delay_bias", 0);
+    dbg!(auto_delay_bias);
+    let verstr: String = if f62_enabled {
+        format!("{}CN", VER)
     } else {
-        todo!()
+        format!("{}", VER)
+    };
+    let mut title = read_ini_string(
+        &conf,
+        "Misc",
+        "game_title",
+        format!("Soku with giuroll {} :YoumuSleep:", verstr),
+    );
+    title.push('\0');
+
+    let verstr = format!("Giuroll {}", verstr);
+
+    let title = title.replace('$', &verstr);
+
+    let tleak = Box::leak(Box::new(title));
+    //let bxd = tleak.encode_utf16().collect::<Box<_>>();
+    //println!("bxd: {:?}", bxd);
+
+    unsafe {
+        TITLE = Box::leak(tleak.encode_utf16().collect::<Box<_>>());
+        F62_ENABLED = f62_enabled;
+        SPIN_TIME_MICROSECOND = spin as i128;
+        INCREASE_DELAY_KEY = inc as u8;
+        DECREASE_DELAY_KEY = dec as u8;
+        TOGGLE_STAT_KEY = net as u8;
+        TOGGLE_STAT = network_menu;
+        LAST_DELAY_VALUE = default_delay as usize;
+        DEFAULT_DELAY_VALUE = default_delay as usize;
+        AUTODELAY_ENABLED = autodelay_enabled;
+    }
+
+    unsafe {
+        let mut b = PAGE_PROTECTION_FLAGS(0);
+        VirtualProtect(
+            0x858b80 as *const c_void,
+            1,
+            PAGE_PROTECTION_FLAGS(0x40),
+            &mut b,
+        );
+
+        *(0x858b80 as *mut u8) = if F62_ENABLED {
+            VERSION_BYTE_62
+        } else {
+            VERSION_BYTE_60
+        };
     }
 
     //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
@@ -1010,6 +1023,8 @@ fn truer_exec(filename: Option<PathBuf>) {
             )
         })
     };
+
+    Some(())
 }
 
 #[no_mangle]
@@ -1561,7 +1576,6 @@ unsafe fn handle_online(
 unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize) {
     //REQUESTED_THREAD_ID.store(0, Relaxed);
 }
-
 
 unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     //println!("GAMETYPE TRUE {}", *(0x8986a0 as *const usize));
