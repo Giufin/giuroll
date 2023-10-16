@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "injector"
 authors = ["Giufin"]
@@ -15,3 +17,4 @@ lto = true
 opt-level = "s"
 codegen-units = 1
 panic = "abort"
+rustflags = ["-C", "target-feature=+crt-static"]
