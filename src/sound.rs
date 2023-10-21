@@ -81,7 +81,7 @@ impl RollbackSoundManager {
             //to do: not only delete sounds, but also restart them/shift them
 
             if !new_sounds.contains(&sound) {
-                let played_recently = (old.saturating_sub(5)..old)
+                let played_recently = (old.saturating_sub(4)..old)
                     .filter_map(|x| self.sounds_that_did_happen.get(&x))
                     .map(|x| x.iter())
                     .flatten()

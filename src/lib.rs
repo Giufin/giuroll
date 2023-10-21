@@ -245,7 +245,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.5";
+const VER: &str = "0.6.6";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -361,10 +361,46 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let dec = read_ini_int_hex(&conf, "Keyboard", "decrease_delay_key", 0);
     let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
     let spin = read_ini_int_hex(&conf, "FramerateFix", "spin_amount", 1500);
-    let network_menu = read_ini_bool(&conf, "Misc", "enable_network_stats_by_default", false);
-    let default_delay = read_ini_int_hex(&conf, "Misc", "default_delay", 2).clamp(0, 9);
     let f62_enabled = read_ini_bool(&conf, "FramerateFix", "enable_f62", cfg!(feature = "f62"));
-    let autodelay_enabled = read_ini_bool(&conf, "Misc", "enable_auto_delay", true);
+    let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
+    let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
+    let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
+    let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
+
+    //soku2 compatibility. Mods should change character size data themselves using exported functions. This is a temporary solution until soku2 team can implement that functionality.
+    unsafe {
+        if soku2_compat_mode {
+            const CHARSIZEDATA_A: [usize; 35] = [
+                2236, 2220, 2208, 2244, 2216, 2284, 2196, 2220, 2260, 2200, 2232, 2200, 2200, 2216,
+                2352, 2224, 2196, 2196, 2216, 2216, 0, 2208, 2236, 2232, 2196, 2196, 2216, 2216,
+                2200, 2216, 2352, 2200, 2284, 2220, 2208,
+            ];
+
+            const CHARSIZEDATA_B: [usize; 35] = [
+                940, 940, 940, 944, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940,
+                940, 940, 940, 940, 0, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940,
+                940, 940,
+            ];
+
+            CHARSIZEDATA = (0..35)
+                .map(|i| (CHARSIZEDATA_A[i], CHARSIZEDATA_B[i]))
+                .collect();
+        } else {
+            const CHARSIZEDATA_A: [usize; 20] = [
+                2236, 2220, 2208, 2244, 2216, 2284, 2196, 2220, 2260, 2200, 2232, 2200, 2200, 2216,
+                2352, 2224, 2196, 2196, 2216, 2216,
+            ];
+
+            const CHARSIZEDATA_B: [usize; 20] = [
+                940, 940, 940, 944, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940,
+                940, 940, 940, 940,
+            ];
+
+            CHARSIZEDATA = (0..20)
+                .map(|i| (CHARSIZEDATA_A[i], CHARSIZEDATA_B[i]))
+                .collect();
+        }
+    }
 
     let auto_delay_bias = read_ini_int_hex(&conf, "Misc", "auto_delay_bias", 0);
     dbg!(auto_delay_bias);
@@ -1177,7 +1213,10 @@ unsafe extern "cdecl" fn reallochook(a: *mut ilhook::x86::Registers, _b: usize) 
 
 use core::sync::atomic::AtomicU8;
 
-use crate::replay::{apause, clean_replay_statics};
+use crate::{
+    replay::{apause, clean_replay_statics},
+    rollback::CHARSIZEDATA,
+};
 
 static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
 

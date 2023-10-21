@@ -15,15 +15,23 @@ use crate::{
 
 type RInput = [bool; 10];
 
-const CHARSIZEDATA_A: [usize; 20] = [
-    2236, 2220, 2208, 2244, 2216, 2284, 2196, 2220, 2260, 2200, 2232, 2200, 2200, 2216, 2352, 2224,
-    2196, 2196, 2216, 2216, /* 0, 2208, */
-];
+pub static mut CHARSIZEDATA: Vec<(usize, usize)> = vec![];
 
-const CHARSIZEDATA_B: [usize; 20] = [
-    940, 940, 940, 944, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940, 940,
-    940, /* 0, 940, */
-];
+#[no_mangle]
+pub unsafe extern "cdecl" fn set_char_data_size(s: usize) {
+    while CHARSIZEDATA.len() > s {
+        CHARSIZEDATA.pop();
+    }
+
+    while CHARSIZEDATA.len() < s {
+        CHARSIZEDATA.push((0, 0))
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "cdecl" fn set_char_data_pos(pos: usize, a: usize, b: usize) {
+    CHARSIZEDATA[pos] = (a, b);
+}
 
 pub enum MemoryManip {
     Alloc(usize),
@@ -609,7 +617,7 @@ pub unsafe fn dump_frame() -> Frame {
                 m.push(a.clone().to_addr());
                 let d = a.additional_data;
                 if d != 0 {
-                    let z = CHARSIZEDATA_B[char as usize % 20];
+                    let z = CHARSIZEDATA[char as usize % CHARSIZEDATA.len()].1;
                     let bullet = read_addr(d, z);
                     m.push(bullet.clone());
                     let p1 = get_ptr(&bullet.content, 0x3a4);
@@ -687,7 +695,7 @@ pub unsafe fn dump_frame() -> Frame {
         let char = old + 0x34c;
         let char = *(char as *const u8);
 
-        let cdat = read_addr(old, CHARSIZEDATA_A[char as usize % 20]);
+        let cdat = read_addr(old, CHARSIZEDATA[char as usize % CHARSIZEDATA.len()].0);
         m.push(cdat.clone());
 
         let bullets = old + 0x17c;
