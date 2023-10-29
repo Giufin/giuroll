@@ -499,7 +499,8 @@ impl Netcoder {
             0
         } else if self.id
             > self.last_opponent_input
-                + ((self.max_rollback * 2) + self.delay.min(self.last_opponent_delay)).min(30)
+                + self.max_rollback
+                + self.delay.min(self.last_opponent_delay)
         {
             crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
             println!(
