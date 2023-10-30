@@ -245,7 +245,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.6";
+const VER: &str = "0.6.7";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -365,6 +365,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
     let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
+    let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
 
     //soku2 compatibility. Mods should change character size data themselves using exported functions. This is a temporary solution until soku2 team can implement that functionality.
@@ -402,8 +403,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let auto_delay_bias = read_ini_int_hex(&conf, "Misc", "auto_delay_bias", 0);
-    dbg!(auto_delay_bias);
+
     let verstr: String = if f62_enabled {
         format!("{}CN", VER)
     } else {
@@ -436,6 +436,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         LAST_DELAY_VALUE = default_delay as usize;
         DEFAULT_DELAY_VALUE = default_delay as usize;
         AUTODELAY_ENABLED = autodelay_enabled;
+        AUTODELAY_ROLLBACK = autodelay_rollback as i8;
     }
 
     unsafe {
@@ -1486,6 +1487,7 @@ static mut LAST_DELAY_VALUE: usize = 0;
 static mut DEFAULT_DELAY_VALUE: usize = 0;
 
 static mut AUTODELAY_ENABLED: bool = false;
+static mut AUTODELAY_ROLLBACK: i8 = 0;
 
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
@@ -1550,7 +1552,11 @@ unsafe fn handle_online(
         ROLLBACKER = Some(rollbacker);
         let mut netcoder = Netcoder::new(m);
         if round == 1 {
-            netcoder.autodelay_enabled = AUTODELAY_ENABLED;
+            netcoder.autodelay_enabled = if AUTODELAY_ENABLED {
+                Some(AUTODELAY_ROLLBACK)
+            } else {
+                None
+            };
             netcoder.delay = DEFAULT_DELAY_VALUE;
         } else {
             netcoder.delay = LAST_DELAY_VALUE;

@@ -113,7 +113,7 @@ pub struct Netcoder {
     time_syncs: Vec<i32>,
     last_median_sync: i32,
 
-    pub autodelay_enabled: bool,
+    pub autodelay_enabled: Option<i8>,
 }
 
 /// The packets are only sent once per frame; a packet contains all previous unconfirmed inputs; a lost "main" packet is not recovered whenever it's not neccesseary
@@ -140,7 +140,7 @@ impl Netcoder {
 
             time_syncs: vec![],
             last_median_sync: 0,
-            autodelay_enabled: false,
+            autodelay_enabled: None,
         }
     }
 
@@ -433,17 +433,19 @@ impl Netcoder {
                 crate::NEXT_DRAW_ROLLBACK = None;
             }
 
-            if self.autodelay_enabled && self.id == 300 {
-                let id = self.id - 60;
-                let iter = (id - 200..id)
-                    .map(|x| self.recv_delays.get(&x))
-                    .filter_map(|x| x)
-                    .map(|x| x.as_micros());
+            if let Some(bias) = self.autodelay_enabled {
+                if self.id == 100 {
+                    //let id = self.id - 60;
+                    let iter = (30..70)
+                        .map(|x| self.recv_delays.get(&x))
+                        .filter_map(|x| x)
+                        .map(|x| x.as_micros());
 
-                let (count, sum) = iter.fold((0, 0), |x, y| (x.0 + 1, x.1 + y));
-                let avg = sum / count;
-                println!("avg: {}", avg);
-                self.delay = ((avg / (1_000_000 / 30)) as usize).min(9);
+                    let (count, sum) = iter.fold((0, 0), |x, y| (x.0 + 1, x.1 + y));
+                    let avg = sum / count;
+                    println!("avg: {}", avg);
+                    self.delay = ((avg / (1_000_000 / 30)) as i8 - bias).clamp(0, 9) as usize;
+                }
             }
         }
 
@@ -500,7 +502,7 @@ impl Netcoder {
         } else if self.id
             > self.last_opponent_input
                 + self.max_rollback
-                + self.delay.min(self.last_opponent_delay)
+                + self.delay.max(self.last_opponent_delay)
         {
             crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
             println!(
