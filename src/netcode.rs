@@ -569,3 +569,38 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
         //info!("socket err: {:?}", WSAGetLastError());
     }
 }
+
+pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
+    //info!("sending packet");
+
+    let netmanager = *(0x8986a0 as *const usize);
+
+    let socket = netmanager + 0x3e4;
+
+    let to;
+    if *(netmanager as *const usize) == 0x858cac {
+        let it = (netmanager + 0x4c8) as *const usize;
+        //data[1] = 1;
+
+        if *it == 0 {
+            panic!();
+        }
+        to = *(it as *const *const SOCKADDR);
+    } else {
+        //data[1] = 2;
+
+        if *(netmanager as *const usize) != 0x858d14 {
+            panic!();
+        }
+        to = (netmanager + 0x47c) as *const SOCKADDR
+    }
+
+    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, data.len() as i32);
+
+    if rse == -1 {
+        //to do, change error handling for sockets
+
+        //#[cfg(feature = "logtofile")]
+        //info!("socket err: {:?}", WSAGetLastError());
+    }
+}

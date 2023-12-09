@@ -26,7 +26,7 @@ use ilhook::x86::{HookPoint, HookType};
 use log::info;
 use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
-use replay::handle_replay;
+
 //use notify::{RecursiveMode, Watcher};
 use rollback::Rollbacker;
 use sound::RollbackSoundManager;
@@ -245,7 +245,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.7";
+const VER: &str = "0.6.8";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -265,6 +265,11 @@ static mut F62_ENABLED: bool = false;
 
 const VERSION_BYTE_60: u8 = 0x6b;
 const VERSION_BYTE_62: u8 = 0x6c;
+
+static mut LAST_GAME_REQUEST: Option<[u8; 400]> = None;
+static mut LAST_LOAD_ACK: Option<[u8; 400]> = None;
+static mut LAST_MATCH_ACK: Option<[u8; 400]> = None;
+static mut LAST_MATCH_LOAD: Option<[u8; 400]> = None;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -402,7 +407,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 .collect();
         }
     }
-
 
     let verstr: String = if f62_enabled {
         format!("{}CN", VER)
@@ -582,7 +586,14 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
-    unsafe extern "cdecl" fn onexit(_a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn on_exit(_a: *mut ilhook::x86::Registers, _b: usize) {
+        HAS_LOADED = false;
+        
+        LAST_LOAD_ACK = None;
+        LAST_GAME_REQUEST = None;
+        LAST_MATCH_ACK = None;
+        LAST_MATCH_LOAD = None;
+
         REQUESTED_THREAD_ID.store(0, Relaxed);
         NEXT_DRAW_PING = None;
 
@@ -651,7 +662,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     };
 
-    let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(onexit), 0).hook(6) };
+    let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(on_exit), 0).hook(6) };
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn onexitexit(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
@@ -979,7 +990,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //    TARGET_OFFSET.store(0, Relaxed);
         //}
 
-        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-1000, 5000);
+        let s = TARGET_OFFSET.swap(0, Relaxed).clamp(-1000, 10000);
         //TARGET_OFFSET.fetch_add(s / 2, Relaxed);
         *target += (target_frametime + s) as u128;
 
@@ -1024,6 +1035,111 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
     //    hook.push(new);
+    /*
+    unsafe extern "cdecl" fn sniff_sent(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
+        //let a = &mut *a;
+
+        use windows::Win32::Networking::WinSock::{sendto, SOCKET};
+
+        let buf =
+            std::slice::from_raw_parts((*a).get_arg(1) as *const u8, (*a).get_arg(2) as usize); //&*((*a).get_arg(1) as *const [u8; 400]);
+
+        if buf.len() > 2 {
+            if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
+                //println!("here game request");
+                let mut m = [0; 400];
+                for i in 0..buf.len() {
+                    m[i] = buf[i];
+                }
+                LAST_GAME_REQUEST = Some(m);
+            }
+
+            if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
+                //println!("here game load ack");
+                let mut m = [0; 400];
+                for i in 0..buf.len() {
+                    m[i] = buf[i];
+                }
+
+                LAST_LOAD_ACK = Some(m);
+            }
+        }
+
+        (*a).eax = sendto(
+            std::mem::transmute::<_, SOCKET>((*a).get_arg(0)),
+            &(&*buf)[..],
+            std::mem::transmute((*a).get_arg(3)),
+            std::mem::transmute((*a).get_arg(4)),
+            std::mem::transmute((*a).get_arg(5)),
+        ) as u32;
+
+
+        //std::thread::sleep(Duration::from_secs(15));
+    }
+
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(
+            0x4171cd,
+            HookType::JmpToAddr(0x4171cd + 5, 0, sniff_sent),
+            0,
+        )
+        .hook(5)
+    };
+    std::mem::forget(new);
+    */
+
+    unsafe extern "cdecl" fn sniff_sent(a: *mut ilhook::x86::Registers, _b: usize) {
+        let ptr = ((*a).edi + 0x1c) as *const u8;
+        let buf = std::slice::from_raw_parts(ptr, 400);
+
+        if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
+            //println!("here game request");
+            let mut m = [0; 400];
+            for i in 0..buf.len() {
+                m[i] = buf[i];
+            }
+            LAST_GAME_REQUEST = Some(m);
+        }
+
+        if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
+            //println!("here game load ack");
+            let mut m = [0; 400];
+            for i in 0..buf.len() {
+                m[i] = buf[i];
+            }
+
+            LAST_LOAD_ACK = Some(m);
+        }
+
+        if (buf[0] == 13 || buf[0] == 14) && buf[1] == 5 {
+            //println!("here match load ack");
+            let mut m = [0; 400];
+            for i in 0..buf.len() {
+                m[i] = buf[i];
+            }
+
+            LAST_MATCH_ACK = Some(m);
+        }
+
+        if (buf[0] == 13 || buf[0] == 14) && buf[1] == 1 {
+            //println!("here match load");
+            let mut m = [0; 400];
+            for i in 0..buf.len() {
+                m[i] = buf[i];
+            }
+
+            LAST_MATCH_LOAD = Some(m);
+        }
+    }
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
+    std::mem::forget(new);
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
+    std::mem::forget(new);
 
     // disable x in replay 0x4826b5
     if false {
@@ -1215,11 +1331,13 @@ unsafe extern "cdecl" fn reallochook(a: *mut ilhook::x86::Registers, _b: usize) 
 use core::sync::atomic::AtomicU8;
 
 use crate::{
-    replay::{apause, clean_replay_statics},
+    netcode::{send_packet, send_packet_untagged},
+    replay::{apause, clean_replay_statics, handle_replay},
     rollback::CHARSIZEDATA,
 };
 
 static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
+static mut HAS_LOADED: bool = false;
 
 unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usize) {
     let esp = (*a).esp;
@@ -1235,6 +1353,8 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //   let input1 = slic[8];
     //   let input2 = slic[9];
 
+    //println!("{} , {}", &slic[0], &slic[1]);
+
     if type1 == 0x6c {
         crate::netcode::send_packet(Box::new([0x6d, 0x060]));
         (*a).eax = 0x400;
@@ -1247,7 +1367,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         let z = NetworkPacket::decode(slic);
         let m = DISABLE_SEND.load(Relaxed);
 
-        if m < 100 {
+        if m < 150 {
             DISABLE_SEND.store(m + 1, Relaxed);
 
             let is_p1 = unsafe {
@@ -1256,92 +1376,49 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             };
             //the packet you receive first frame, every round. We are making it manually, to prevent data loss from freezing the game
             if !is_p1 {
-                const P1_PACKETS: [[u8; 400]; 2] = [
-                    [
-                        13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
-                        104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0,
-                        208, 0, 208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108,
-                        0, 0, 0, 0, 0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ],
-                    [
-                        13, 3, 2, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 103, 0, 103, 0, 103, 0,
-                        104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0,
-                        208, 0, 208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108,
-                        0, 0, 0, 0, 0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ],
+                const P1_PACKETS: [u8; 400] = [
+                    13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
+                    104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0, 208, 0,
+                    208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108, 0, 0, 0, 0,
+                    0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0,
                 ];
 
-                slic.copy_from_slice(&P1_PACKETS[m as usize % 2])
+                slic.copy_from_slice(&P1_PACKETS)
             } else {
-                const P2_PACKETS: [[u8; 400]; 2] = [
-                    [
-                        14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0,
-                        102, 0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0,
-                        201, 0, 201, 0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37,
-                        118, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ],
-                    [
-                        14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0,
-                        102, 0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0,
-                        201, 0, 201, 0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37,
-                        118, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ],
+                const P2_PACKETS: [u8; 400] = [
+                    14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0, 102,
+                    0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0, 201, 0, 201,
+                    0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37, 118, 8, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ];
                 //both packets here are the same, both are the 0th packet, this is maybe unneccesseary
 
-                slic.copy_from_slice(&P2_PACKETS[m as usize % 2])
+                slic.copy_from_slice(&P2_PACKETS)
             }
         } else {
             (*a).eax = 0x400;
@@ -1352,12 +1429,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             .unwrap()
             .send((z, Instant::now()))
             .unwrap();
-    } else {
-        //println!("received {} {} {}, data: {:?}", type1, type2, sceneid, slic);
-    }
-
-    if type1 == 13 {
-        //println!("received p2: {}", type2);
     }
 
     if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 && false {
@@ -1372,9 +1443,60 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         );
     }
 
+    if type1 == 14 || type1 == 13 {
+        if type2 == 4 {
+            HAS_LOADED = true;
+            //println!("has loaded !");
+        }
+
+        if type2 == 8 || type2 == 1 {
+            if let Some(gr) = LAST_GAME_REQUEST {
+                send_packet_untagged(Box::new(gr));
+                //println!("successfully sent :)");
+            }
+            /*
+            
+            if let Some(gr) = LAST_LOAD_ACK {
+                if HAS_LOADED {
+                    send_packet_untagged(Box::new(gr));
+                    println!("successfully sent 2 :)");
+                } else {
+                    println!("HASN'T LOADED ?!");
+                }
+            } else {
+                println!("SHOULDN'T BE HERE ?! sending mockup");
+                send_packet_untagged(Box::new([13, 2, 5,]));
+            }
+             */
+            //if let Some(gr) = LAST_MATCH_ACK {
+            //    send_packet_untagged(Box::new(gr));
+            //    println!("successfully sent 3 :)");
+            //}
+
+            //if let Some(gr) = LAST_MATCH_LOAD {
+            //    send_packet_untagged(Box::new(gr));
+            //    println!("successfully sent 4 :)");
+            //}
+        }
+
+        if type2 == 1 && false {
+            if let Some(gr) = LAST_LOAD_ACK {
+                send_packet_untagged(Box::new(gr));
+                println!("successfully sent 2 :)");
+            } else {
+                if let Some(gr) = LAST_GAME_REQUEST {
+                    send_packet_untagged(Box::new(gr));
+                    println!("successfully sent 3 :)");
+                }
+                println!("possibly shouldn't be here 2?");
+            }
+        }
+    }
+
     if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
+        //println!("esc observed");
         ESC += 1;
         if ESC > 60 {
             BATTLE_STARTED = false;
