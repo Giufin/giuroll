@@ -4,7 +4,7 @@
 use core::panic;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    ffi::{c_void, OsStr},
+    ffi::{c_void, CString, OsStr},
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
     str::FromStr,
@@ -495,10 +495,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(main_hook), 0).hook(6) };
     std::mem::forget(new);
 
-    let new =
-        unsafe { ilhook::x86::Hooker::new(0x482745, HookType::JmpBack(frameexithook), 0).hook(6) };
-    std::mem::forget(new);
-
     //0x899d60 maybe sound manager?
     unsafe extern "cdecl" fn handle_sound_real(
         a: *mut ilhook::x86::Registers,
@@ -588,7 +584,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     unsafe extern "cdecl" fn on_exit(_a: *mut ilhook::x86::Registers, _b: usize) {
         HAS_LOADED = false;
-        
+
         LAST_LOAD_ACK = None;
         LAST_GAME_REQUEST = None;
         LAST_MATCH_ACK = None;
@@ -822,14 +818,20 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         unsafe { ilhook::x86::Hooker::new(0x41daea, HookType::JmpBack(readonlinedata), 0).hook(5) };
     std::mem::forget(new);
 
-    //prevents a check for whether there is a frame from the opponent to allow for smooth rollback
+    /*
+
     unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
-        (*a).eax = *(0x8a0040 as *const u32);
+        if *(0x8a0044 as *const u32) != *(0x8a0040 as *const u32) {
+            println!("here");
+        }
+        //(*a).eax = *(0x8a0040 as *const u32);
     }
 
     let new =
         unsafe { ilhook::x86::Hooker::new(0x407f1b, HookType::JmpBack(set_eax_to_0), 0).hook(6) };
     std::mem::forget(new);
+
+     */
 
     unsafe extern "cdecl" fn handle_raw_input(
         a: *mut ilhook::x86::Registers,
@@ -1014,7 +1016,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
-                while m.elapsed().unwrap().as_micros() < *target {}
+                loop {
+                    let r1 = m.elapsed().unwrap().as_micros();
+                    if r1 >= *target {
+                        break;
+                    } 
+                }
             }
         };
     }
@@ -1347,7 +1354,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     let type1 = slic[0];
     let type2 = slic[1];
 
-    //   let frame_count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
+    let count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
     let sceneid = slic[6];
     //   let somethingweird = slic[7];
     //   let input1 = slic[8];
@@ -1356,7 +1363,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //println!("{} , {}", &slic[0], &slic[1]);
 
     if type1 == 0x6c {
-        crate::netcode::send_packet(Box::new([0x6d, 0x060]));
+        crate::netcode::send_packet_untagged(Box::new([0x6d, 0x060]));
         (*a).eax = 0x400;
     }
     if type1 > 0x6c && type1 <= 0x80 {
@@ -1444,6 +1451,10 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if type1 == 14 || type1 == 13 {
+        //if type2 == 1 {
+        //    println!("received {} {} data: {:?}", type1, type2, slic);
+        //}
+
         if type2 == 4 {
             HAS_LOADED = true;
             //println!("has loaded !");
@@ -1455,7 +1466,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                 //println!("successfully sent :)");
             }
             /*
-            
+
             if let Some(gr) = LAST_LOAD_ACK {
                 if HAS_LOADED {
                     send_packet_untagged(Box::new(gr));
@@ -1493,15 +1504,22 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         }
     }
 
-    if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
+    if (type1 == 14 || type1 == 13) && type2 == 1 {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
         //println!("esc observed");
         ESC += 1;
         if ESC > 60 {
             BATTLE_STARTED = false;
+            ESC -= 1;
         }
 
+        if ESC > 250 && false {
+            // the problem here is that the same state is present when one person is waiting in the "girls talking" screen, so for now this is not viable
+            slic[0] = 0xb;
+            ESC = 0;
+            send_packet_untagged(Box::new([0xb]));
+        }
         //info!("received {} {} {}", type1, type2, sceneid);
     }
 
@@ -1738,10 +1756,6 @@ unsafe fn handle_online(
         pause(battle_state, state_sub_count);
         return;
     }
-}
-
-unsafe extern "cdecl" fn frameexithook(a: *mut ilhook::x86::Registers, _b: usize) {
-    //REQUESTED_THREAD_ID.store(0, Relaxed);
 }
 
 unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
