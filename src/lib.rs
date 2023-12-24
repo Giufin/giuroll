@@ -370,6 +370,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
     let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
+    let frame_one_freeze_mitigation = read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
 
@@ -1140,13 +1141,16 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let new =
+    if frame_one_freeze_mitigation {
+    
+        let new =
         unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
-    std::mem::forget(new);
-
-    let new =
+        std::mem::forget(new);
+        
+        let new =
         unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
-    std::mem::forget(new);
+        std::mem::forget(new);
+    }
 
     // disable x in replay 0x4826b5
     if false {
@@ -1504,15 +1508,16 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         }
     }
 
-    if (type1 == 14 || type1 == 13) && type2 == 1 {
+    if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
         //println!("esc observed");
         ESC += 1;
         if ESC > 60 {
             BATTLE_STARTED = false;
-            ESC -= 1;
+            
         }
+
 
         if ESC > 250 && false {
             // the problem here is that the same state is present when one person is waiting in the "girls talking" screen, so for now this is not viable
