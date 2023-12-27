@@ -34,6 +34,7 @@ use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
         Foundation::{HMODULE, HWND},
+        Networking::WinSock::closesocket,
         System::{
             Console::AllocConsole,
             Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
@@ -245,7 +246,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.9";
+const VER: &str = "0.6.10";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -370,7 +371,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
     let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
-    let frame_one_freeze_mitigation = read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
+    let frame_one_freeze_mitigation =
+        read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
 
@@ -583,7 +585,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
-    unsafe extern "cdecl" fn on_exit(_a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn on_exit(_: *mut ilhook::x86::Registers, _: usize) {
         HAS_LOADED = false;
 
         LAST_LOAD_ACK = None;
@@ -596,6 +598,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
+        ESC2 = 0;
         BATTLE_STARTED = false;
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
@@ -616,7 +619,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //}
 
         if let Some(x) = NETCODER.take() {
-            DATA_RECEIVER = Some(x.receiver);
+            let r = x.receiver;
+            while r.try_recv().is_ok() {}
+            DATA_RECEIVER = Some(r);
         }
 
         // it cannot be used by any different thread now
@@ -821,6 +826,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     /*
 
+    407f43 is being set to 8 upon ESC. 407f43 likely stores desired screen 0x8a0040 and the comparison with DAT_008a0044 is where the state gets bugged.
+    if it's possible to "flush" the state to "go back to character select", that would be ideal
+
     unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
         if *(0x8a0044 as *const u32) != *(0x8a0040 as *const u32) {
             println!("here");
@@ -1021,7 +1029,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                     let r1 = m.elapsed().unwrap().as_micros();
                     if r1 >= *target {
                         break;
-                    } 
+                    }
                 }
             }
         };
@@ -1142,13 +1150,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     if frame_one_freeze_mitigation {
-    
         let new =
-        unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
+            unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
         std::mem::forget(new);
-        
+
         let new =
-        unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
+            unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
         std::mem::forget(new);
     }
 
@@ -1351,6 +1358,43 @@ static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
 static mut HAS_LOADED: bool = false;
 
 unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usize) {
+    const P1_PACKETS: [u8; 400] = [
+        13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0, 104, 0, 104, 0,
+        104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0, 208, 0, 208, 0, 208, 0, 1, 15, 0,
+        0, 0, 189, 3, 21, 23, 251, 48, 70, 108, 0, 0, 0, 0, 0, 0, 221, 143, 113, 190, 134, 199,
+        125, 39, 12, 12, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+    ];
+
+    const P2_PACKETS: [u8; 400] = [
+        14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0, 102, 0, 103, 0,
+        103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0, 201, 0, 201, 0, 203, 0, 203, 0,
+        203, 0, 203, 0, 1, 15, 119, 144, 191, 37, 118, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    //both packets here are the same, both are the 0th packet, this is maybe unneccesseary
+
     let esp = (*a).esp;
 
     let packet_pointer = esp + 0x70;
@@ -1375,8 +1419,16 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if type1 == 0x6b {
-        let z = NetworkPacket::decode(slic);
         let m = DISABLE_SEND.load(Relaxed);
+
+        if BATTLE_STARTED {
+            let z = NetworkPacket::decode(slic);
+            DATA_SENDER
+                .as_ref()
+                .unwrap()
+                .send((z, Instant::now()))
+                .unwrap();
+        }
 
         if m < 150 {
             DISABLE_SEND.store(m + 1, Relaxed);
@@ -1387,59 +1439,13 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             };
             //the packet you receive first frame, every round. We are making it manually, to prevent data loss from freezing the game
             if !is_p1 {
-                const P1_PACKETS: [u8; 400] = [
-                    13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0,
-                    104, 0, 104, 0, 104, 0, 104, 0, 106, 0, 106, 0, 200, 0, 203, 0, 208, 0, 208, 0,
-                    208, 0, 208, 0, 1, 15, 0, 0, 0, 189, 3, 21, 23, 251, 48, 70, 108, 0, 0, 0, 0,
-                    0, 0, 221, 143, 113, 190, 134, 199, 125, 39, 12, 12, 64, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0,
-                ];
-
                 slic.copy_from_slice(&P1_PACKETS)
             } else {
-                const P2_PACKETS: [u8; 400] = [
-                    14, 3, 0, 0, 0, 0, 5, 1, 0, 0, 20, 100, 0, 100, 0, 101, 0, 101, 0, 102, 0, 102,
-                    0, 103, 0, 103, 0, 200, 0, 200, 0, 200, 0, 200, 0, 201, 0, 201, 0, 201, 0, 201,
-                    0, 203, 0, 203, 0, 203, 0, 203, 0, 1, 15, 119, 144, 191, 37, 118, 8, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                ];
-                //both packets here are the same, both are the 0th packet, this is maybe unneccesseary
-
                 slic.copy_from_slice(&P2_PACKETS)
             }
         } else {
             (*a).eax = 0x400;
         }
-
-        DATA_SENDER
-            .as_ref()
-            .unwrap()
-            .send((z, Instant::now()))
-            .unwrap();
     }
 
     if (type1 == 14 || type1 == 13) && type2 == 3 && sceneid == 0x5 && false {
@@ -1508,22 +1514,55 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         }
     }
 
-    if (type1 == 14 || type1 == 13) && type2 == 1 && BATTLE_STARTED {
+    if (type1 == 14 || type1 == 13) && type2 == 1 {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
         //println!("esc observed");
-        ESC += 1;
-        if ESC > 60 {
-            BATTLE_STARTED = false;
-            
-        }
 
+        if sceneid == 5 {
+            ESC += 1;
 
-        if ESC > 250 && false {
-            // the problem here is that the same state is present when one person is waiting in the "girls talking" screen, so for now this is not viable
-            slic[0] = 0xb;
-            ESC = 0;
-            send_packet_untagged(Box::new([0xb]));
+            if ESC == 10 {
+                let is_p1 = unsafe {
+                    let netmanager = *(0x8986a0 as *const usize);
+                    *(netmanager as *const usize) == 0x858cac
+                };
+                //the packet you receive first frame, every round. We are making it manually, to prevent data loss from freezing the game
+                if !is_p1 {
+                    slic.copy_from_slice(&P1_PACKETS)
+                } else {
+                    slic.copy_from_slice(&P2_PACKETS)
+                }
+            }
+
+            //if ESC == 20 {
+            //    *(0x8a0040 as *mut u32) = 8
+            //}
+
+            if ESC > 250 {
+                println!("here stuck state detected");
+                slic[0] = 0xb;
+                ESC = 0;
+                send_packet_untagged(Box::new([0xb]));
+                let netmanager = *(0x8986a0 as *const usize);
+                let socket = netmanager + 0x3e4;
+
+                closesocket(*(socket as *const windows::Win32::Networking::WinSock::SOCKET));
+            }
+        } else if !BATTLE_STARTED && false
+        /* temporarely disabled because it's still affected by the character talking stalling issue */
+        {
+            ESC2 += 1;
+            if ESC2 >= 250 {
+                println!("here stuck state detected 2");
+                slic[0] = 0xb;
+                ESC2 = 0;
+                send_packet_untagged(Box::new([0xb]));
+                let netmanager = *(0x8986a0 as *const usize);
+                let socket = netmanager + 0x3e4;
+
+                closesocket(*(socket as *const windows::Win32::Networking::WinSock::SOCKET));
+            }
         }
         //info!("received {} {} {}", type1, type2, sceneid);
     }
@@ -1637,7 +1676,10 @@ static mut AUTODELAY_ROLLBACK: i8 = 0;
 static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 
 static mut BATTLE_STARTED: bool = false;
-static mut ESC: u8 = 0; // maybe shouldn't be not atomic
+
+static mut ESC: u8 = 0;
+
+static mut ESC2: u8 = 0; // used for the stuck state when one of the clients keep wanting to go into the character select screen
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
