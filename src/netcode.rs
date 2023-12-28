@@ -41,8 +41,8 @@ impl NetworkPacket {
 
         buf[next..next + 4].copy_from_slice(&self.last_confirm.to_le_bytes());
         let next = next + 4;
+        
         buf[next..next + 4].copy_from_slice(&self.sync.unwrap_or(i32::MAX).to_le_bytes());
-
         let last = next + 4;
 
         buf[0..last].to_vec().into_boxed_slice()
@@ -560,7 +560,7 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, data.len() as i32);
+    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets
@@ -595,12 +595,12 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, data.len() as i32);
+    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets
 
         //#[cfg(feature = "logtofile")]
-        //info!("socket err: {:?}", WSAGetLastError());
+        println!("socket err: {:?}", windows::Win32::Networking::WinSock::WSAGetLastError());
     }
 }

@@ -3,11 +3,11 @@
 
 use core::panic;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    ffi::{c_void, CString, OsStr},
+    collections::{BTreeSet, HashMap},
+    ffi::{c_void, OsStr},
+    
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -73,111 +73,6 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
 
     Ok(())
 }
-
-//constexpr uintptr_t GAME_DRAW_NUMBER_FN = 0x00414940;
-//reinterpret_cast<int(__thiscall *)(void* _this, int number, float x, float y, int a1, char a2)>(GAME_DRAW_NUMBER_FN)
-
-//a 1 and a2 are 0 usually
-
-/*#[no_mangle]
-pub extern "cdecl"
-fn init(_: usize) -> Option<()> {
-    const BPATH: &'static str = r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\fake";
-
-    set_up_fern().ok()?;
-
-    if ISDEBUG {
-        info!("setting up logging")
-    };
-
-    std::fs::remove_dir_all(BPATH).ok()?;
-    std::fs::create_dir(BPATH).ok()?;
-    std::thread::spawn(|| {
-        static PREVIOUS: Mutex<Option<(Library, String)>> = Mutex::new(None);
-
-        static PID: AtomicI8 = AtomicI8::new(0);
-        let mut watcher =
-            notify::recommended_watcher(|x: Result<notify::Event, notify::Error>| unsafe {
-                //pure chaos, due to the file locking "itself", will need to fix
-                if let Ok(x) = x {
-                    if !x.kind.is_modify() || x.kind.is_create() {
-                        return;
-                    }
-                }
-
-                if ISDEBUG {
-                    info!("file change, reloading dll")
-                };
-
-                let nextidx = PID.load(Relaxed);
-                PID.store(nextidx + 1, Relaxed);
-
-                if let Some((lib, file)) = PREVIOUS.lock().unwrap().take() {
-                    let func: libloading::Symbol<unsafe extern "C" fn() -> ()> =
-                        lib.get(b"cleanup").unwrap();
-                    func();
-                    lib.close().unwrap();
-                    let _ = std::fs::remove_dir(file);
-                }
-
-                let next = format!(
-                    "{}{}{}.dll",
-                    r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\fake\giuroll",
-                    nextidx,
-                    std::process::id()
-                );
-
-                if let Err(_) = std::fs::copy(
-                    r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\true\giuroll.dll",
-                    &next,
-                ) {
-                    info!("copy unsuccessfull");
-                }
-
-                let x = libloading::Library::new(&next);
-                match x {
-                    Ok(lib) => {
-                        let func: libloading::Symbol<unsafe extern "C" fn() -> ()> =
-                            lib.get(b"true_exec").unwrap();
-                        func();
-                        *PREVIOUS.lock().unwrap() = Some((lib, next));
-
-                        if ISDEBUG {
-                            info!("reload successfull")
-                        };
-                    }
-                    Err(x) => {
-                        if ISDEBUG {
-                            info!("reload unsuccessfull{:?}", x);
-                        };
-                    }
-                }
-            })
-            .unwrap();
-
-        // Add a path to be watched. All files and directories at that path and
-        // below will be monitored for changes.
-        watcher
-            .watch(
-                Path::new(r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\true"),
-                RecursiveMode::NonRecursive,
-            )
-            .unwrap();
-
-        std::mem::forget(watcher)
-    });
-
-    //let lib = libloading::Library::new(
-    //    r"C:\Users\Giuuu\Desktop\giuroll\giuroll\target\debug\giuroll.dll",
-    //)
-    //.unwrap();
-    //let func: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib.get(b"my_func").unwrap();
-
-    /* 0x407e30*/
-    //std::mem::forget();
-    Some(())
-}
-*/
 
 use winapi::um::libloaderapi::GetModuleFileNameW;
 
@@ -429,8 +324,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let title = title.replace('$', &verstr);
 
     let tleak = Box::leak(Box::new(title));
-    //let bxd = tleak.encode_utf16().collect::<Box<_>>();
-    //println!("bxd: {:?}", bxd);
 
     unsafe {
         TITLE = Box::leak(tleak.encode_utf16().collect::<Box<_>>());
@@ -586,8 +479,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn on_exit(_: *mut ilhook::x86::Registers, _: usize) {
+        println!("on exit");
         HAS_LOADED = false;
 
+        GIRLS_ARE_TALKING = false;
         LAST_LOAD_ACK = None;
         LAST_GAME_REQUEST = None;
         LAST_MATCH_ACK = None;
@@ -598,7 +493,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
         *(0x8971C0 as *mut usize) = 0; // reset wether to prevent desyncs
         ESC = 0;
-        ESC2 = 0;
+        ESC2.store(0, Relaxed);
         BATTLE_STARTED = false;
         DISABLE_SEND.store(0, Relaxed);
         LAST_STATE.store(0, Relaxed);
@@ -825,22 +720,46 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     std::mem::forget(new);
 
     /*
-
     407f43 is being set to 8 upon ESC. 407f43 likely stores desired screen 0x8a0040 and the comparison with DAT_008a0044 is where the state gets bugged.
     if it's possible to "flush" the state to "go back to character select", that would be ideal
+    */
 
+    /*
+    
     unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
-        if *(0x8a0044 as *const u32) != *(0x8a0040 as *const u32) {
-            println!("here");
-        }
+        //let r = *(0x8a0040 as *const u32);
+        //println!("esc: {}", r);
+
         //(*a).eax = *(0x8a0040 as *const u32);
     }
-
     let new =
         unsafe { ilhook::x86::Hooker::new(0x407f1b, HookType::JmpBack(set_eax_to_0), 0).hook(6) };
     std::mem::forget(new);
+ */
 
-     */
+    unsafe extern "cdecl" fn override_current_game_state(
+        a: *mut ilhook::x86::Registers,
+        _b: usize,
+    ) {
+        if ESC2.load(Relaxed) != 0 {
+            ESC2.store(0, Relaxed);
+            if !GIRLS_ARE_TALKING {
+                //println!("esc from opponent detected");
+                
+                if is_p1() {
+                    (*a).eax = 8;
+                } else {
+                    (*a).eax = 9;
+                }
+            }
+        }
+
+    }
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x407f48, HookType::JmpBack(override_current_game_state), 0)
+            .hook(6)
+    };
+    std::mem::forget(new);
 
     unsafe extern "cdecl" fn handle_raw_input(
         a: *mut ilhook::x86::Registers,
@@ -913,8 +832,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         _b: usize,
         _c: usize,
     ) -> usize {
-        if ESC > 60 {
-            ESC = 0;
+        if ESC > 120 {
+            //old mechanism
             0x428393
         } else {
             //let skip = DISABLE_SEND.load(Relaxed) != 0;
@@ -931,6 +850,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             }
         }
     }
+    unsafe extern "cdecl" fn esc_host(a: *mut ilhook::x86::Registers, _b: usize) {
+        //println!("host has esced");
+        send_packet_untagged(Box::new([0x6e, 0]))
+    }
+
+    let new = unsafe { ilhook::x86::Hooker::new(0x428394, HookType::JmpBack(esc_host), 0).hook(5) };
+    std::mem::forget(new);
 
     //input 00428341
     /*
@@ -945,8 +871,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         _b: usize,
         _c: usize,
     ) -> usize {
-        if ESC > 60 {
-            ESC = 0;
+        if ESC > 120 {
+            //old mechanism
             0x4286c3
         } else {
             //let skip = DISABLE_SEND.load(Relaxed) != 0;
@@ -963,6 +889,21 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             }
         }
     }
+
+    unsafe extern "cdecl" fn esc_client(a: *mut ilhook::x86::Registers, _b: usize) {
+        //println!("client has esced");
+        send_packet_untagged(Box::new([0x6e, 0]))
+    }
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x428664, HookType::JmpBack(esc_client), 0).hook(5) };
+    std::mem::forget(new);
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x428681, HookType::JmpBack(esc_client), 0).hook(5) };
+    std::mem::forget(new);
+
+    //not sure why client has two "esc" spaces but I'm not going to question it
 
     let new = unsafe {
         ilhook::x86::Hooker::new(0x428600, HookType::JmpToRet(skiponceclient), 0).hook(5)
@@ -1050,67 +991,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         .hook(8)
     };
     std::mem::forget(new);
-    //    hook.push(new);
-    /*
-    unsafe extern "cdecl" fn sniff_sent(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
-        //let a = &mut *a;
-
-        use windows::Win32::Networking::WinSock::{sendto, SOCKET};
-
-        let buf =
-            std::slice::from_raw_parts((*a).get_arg(1) as *const u8, (*a).get_arg(2) as usize); //&*((*a).get_arg(1) as *const [u8; 400]);
-
-        if buf.len() > 2 {
-            if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
-                //println!("here game request");
-                let mut m = [0; 400];
-                for i in 0..buf.len() {
-                    m[i] = buf[i];
-                }
-                LAST_GAME_REQUEST = Some(m);
-            }
-
-            if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
-                //println!("here game load ack");
-                let mut m = [0; 400];
-                for i in 0..buf.len() {
-                    m[i] = buf[i];
-                }
-
-                LAST_LOAD_ACK = Some(m);
-            }
-        }
-
-        (*a).eax = sendto(
-            std::mem::transmute::<_, SOCKET>((*a).get_arg(0)),
-            &(&*buf)[..],
-            std::mem::transmute((*a).get_arg(3)),
-            std::mem::transmute((*a).get_arg(4)),
-            std::mem::transmute((*a).get_arg(5)),
-        ) as u32;
-
-
-        //std::thread::sleep(Duration::from_secs(15));
-    }
-
-
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x4171cd,
-            HookType::JmpToAddr(0x4171cd + 5, 0, sniff_sent),
-            0,
-        )
-        .hook(5)
-    };
-    std::mem::forget(new);
-    */
 
     unsafe extern "cdecl" fn sniff_sent(a: *mut ilhook::x86::Registers, _b: usize) {
         let ptr = ((*a).edi + 0x1c) as *const u8;
         let buf = std::slice::from_raw_parts(ptr, 400);
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
-            //println!("here game request");
+            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1119,7 +1006,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
-            //println!("here game load ack");
+            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1129,7 +1016,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 5 {
-            //println!("here match load ack");
+            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1139,7 +1026,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 1 {
-            //println!("here match load");
+            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1260,13 +1147,6 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
         return;
     }
 
-    //if {
-    //    println!("missmatched scene id")
-    //} // never happens
-
-    //FREEMUTEX.lock().unwrap().insert(*s);
-    //return;
-
     unsafe {
         MEMORY_SENDER_FREE
             .as_ref()
@@ -1357,6 +1237,14 @@ use crate::{
 static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
 static mut HAS_LOADED: bool = false;
 
+pub fn is_p1() -> bool {
+    let is_p1 = unsafe {
+        let netmanager = *(0x8986a0 as *const usize);
+        *(netmanager as *const usize) == 0x858cac
+    };
+    is_p1
+}
+
 unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usize) {
     const P1_PACKETS: [u8; 400] = [
         13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0, 104, 0, 104, 0,
@@ -1410,11 +1298,21 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     //println!("{} , {}", &slic[0], &slic[1]);
 
-    if type1 == 0x6c {
+    
+
+    if type1 == 0x6e {
+        //opponent esc
+        ESC2.store(1, Relaxed);
+
+        if !is_p1() {
+            slic.copy_from_slice(&P1_PACKETS)
+        } else {
+            slic.copy_from_slice(&P2_PACKETS)
+        }
+    } else if type1 == 0x6c {
         crate::netcode::send_packet_untagged(Box::new([0x6d, 0x060]));
         (*a).eax = 0x400;
-    }
-    if type1 > 0x6c && type1 <= 0x80 {
+    } else if type1 > 0x6c && type1 <= 0x80 {
         (*a).eax = 0x400;
     }
 
@@ -1473,31 +1371,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         if type2 == 8 || type2 == 1 {
             if let Some(gr) = LAST_GAME_REQUEST {
                 send_packet_untagged(Box::new(gr));
-                //println!("successfully sent :)");
             }
-            /*
-
-            if let Some(gr) = LAST_LOAD_ACK {
-                if HAS_LOADED {
-                    send_packet_untagged(Box::new(gr));
-                    println!("successfully sent 2 :)");
-                } else {
-                    println!("HASN'T LOADED ?!");
-                }
-            } else {
-                println!("SHOULDN'T BE HERE ?! sending mockup");
-                send_packet_untagged(Box::new([13, 2, 5,]));
-            }
-             */
-            //if let Some(gr) = LAST_MATCH_ACK {
-            //    send_packet_untagged(Box::new(gr));
-            //    println!("successfully sent 3 :)");
-            //}
-
-            //if let Some(gr) = LAST_MATCH_LOAD {
-            //    send_packet_untagged(Box::new(gr));
-            //    println!("successfully sent 4 :)");
-            //}
         }
 
         if type2 == 1 && false {
@@ -1517,9 +1391,11 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     if (type1 == 14 || type1 == 13) && type2 == 1 {
         //opponent has esced (probably) exit, the 60 is to avoid stray packets causing exits
 
-        //println!("esc observed");
-
-        if sceneid == 5 {
+        //if sceneid == 3 {
+        //    // starting battle, likely we can safely reset ESC
+        //    ESC = 0;
+        //}
+        if BATTLE_STARTED {
             ESC += 1;
 
             if ESC == 10 {
@@ -1543,20 +1419,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                 println!("here stuck state detected");
                 slic[0] = 0xb;
                 ESC = 0;
-                send_packet_untagged(Box::new([0xb]));
-                let netmanager = *(0x8986a0 as *const usize);
-                let socket = netmanager + 0x3e4;
-
-                closesocket(*(socket as *const windows::Win32::Networking::WinSock::SOCKET));
-            }
-        } else if !BATTLE_STARTED && false
-        /* temporarely disabled because it's still affected by the character talking stalling issue */
-        {
-            ESC2 += 1;
-            if ESC2 >= 250 {
-                println!("here stuck state detected 2");
-                slic[0] = 0xb;
-                ESC2 = 0;
                 send_packet_untagged(Box::new([0xb]));
                 let netmanager = *(0x8986a0 as *const usize);
                 let socket = netmanager + 0x3e4;
@@ -1678,8 +1540,9 @@ static mut LAST_DELAY_MANIP: u8 = 0; // 0 neither, 1 up, 2 down, 3 both
 static mut BATTLE_STARTED: bool = false;
 
 static mut ESC: u8 = 0;
+static mut GIRLS_ARE_TALKING: bool = false;
 
-static mut ESC2: u8 = 0; // used for the stuck state when one of the clients keep wanting to go into the character select screen
+static mut ESC2: AtomicU8 = AtomicU8::new(0);
 
 static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
@@ -1755,6 +1618,8 @@ unsafe fn handle_online(
         //return;
     }
 
+    GIRLS_ARE_TALKING = true;
+
     let rollbacker = ROLLBACKER.as_mut().unwrap();
     let netcoder = NETCODER.as_mut().unwrap();
 
@@ -1806,7 +1671,6 @@ unsafe fn handle_online(
 }
 
 unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
-    //println!("GAMETYPE TRUE {}", *(0x8986a0 as *const usize));
     #[cfg(feature = "logtofile")]
     std::panic::set_hook(Box::new(|x| info!("panic! {:?}", x)));
     //REQUESTED_THREAD_ID.store(0, Relaxed);
@@ -1829,8 +1693,6 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     }
     let gametype_main = *(0x898688 as *const usize);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
-
-    //println!("{:?}", (*battle_state, *state_sub_count));
 
     match (gametype_main, is_netplay) {
         (2, false) => {
@@ -1870,7 +1732,6 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         // together with the no_ko_sound hook. Explanation in the no_ko_sound hook.
         //IS_KO = true;
         if *state_sub_count == 1 {
-            //println!("on KO");
             std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x439490)(0x2c);
         }
     } else {
