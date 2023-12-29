@@ -5,7 +5,6 @@ use core::panic;
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::{c_void, OsStr},
-    
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
     sync::{
@@ -725,17 +724,17 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     */
 
     /*
-    
-    unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
-        //let r = *(0x8a0040 as *const u32);
-        //println!("esc: {}", r);
 
-        //(*a).eax = *(0x8a0040 as *const u32);
-    }
-    let new =
-        unsafe { ilhook::x86::Hooker::new(0x407f1b, HookType::JmpBack(set_eax_to_0), 0).hook(6) };
-    std::mem::forget(new);
- */
+       unsafe extern "cdecl" fn set_eax_to_0(a: *mut ilhook::x86::Registers, _b: usize) {
+           //let r = *(0x8a0040 as *const u32);
+           //println!("esc: {}", r);
+
+           //(*a).eax = *(0x8a0040 as *const u32);
+       }
+       let new =
+           unsafe { ilhook::x86::Hooker::new(0x407f1b, HookType::JmpBack(set_eax_to_0), 0).hook(6) };
+       std::mem::forget(new);
+    */
 
     unsafe extern "cdecl" fn override_current_game_state(
         a: *mut ilhook::x86::Registers,
@@ -745,7 +744,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             ESC2.store(0, Relaxed);
             if !GIRLS_ARE_TALKING {
                 //println!("esc from opponent detected");
-                
+
                 if is_p1() {
                     (*a).eax = 8;
                 } else {
@@ -753,7 +752,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 }
             }
         }
-
     }
     let new = unsafe {
         ilhook::x86::Hooker::new(0x407f48, HookType::JmpBack(override_current_game_state), 0)
@@ -997,7 +995,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let buf = std::slice::from_raw_parts(ptr, 400);
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
-            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1006,7 +1003,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
-            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1016,7 +1012,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 5 {
-            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1026,7 +1021,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 1 {
-            
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1299,7 +1293,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //println!("{} , {}", &slic[0], &slic[1]);
 
     
-
     if type1 == 0x6e {
         //opponent esc
         ESC2.store(1, Relaxed);
@@ -1618,7 +1611,9 @@ unsafe fn handle_online(
         //return;
     }
 
-    GIRLS_ARE_TALKING = true;
+    if *battle_state == 6 {
+        GIRLS_ARE_TALKING = true;
+    }
 
     let rollbacker = ROLLBACKER.as_mut().unwrap();
     let netcoder = NETCODER.as_mut().unwrap();
