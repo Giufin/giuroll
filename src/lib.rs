@@ -1292,7 +1292,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     //println!("{} , {}", &slic[0], &slic[1]);
 
-    
     if type1 == 0x6e {
         //opponent esc
         ESC2.store(1, Relaxed);
@@ -1303,7 +1302,23 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             slic.copy_from_slice(&P2_PACKETS)
         }
     } else if type1 == 0x6c {
-        crate::netcode::send_packet_untagged(Box::new([0x6d, 0x060]));
+
+         
+
+        let buf = [0x6d, 0x61];
+        let sock = *(((*a).edi + 0x28) as *const u32);
+        let to = (*a).esp + 0x44;
+
+
+        windows::Win32::Networking::WinSock::sendto(
+            std::mem::transmute::<u32, windows::Win32::Networking::WinSock::SOCKET>(sock),
+            &buf,
+            0,
+            to as *const windows::Win32::Networking::WinSock::SOCKADDR,
+            0x10,
+        );
+
+
         (*a).eax = 0x400;
     } else if type1 > 0x6c && type1 <= 0x80 {
         (*a).eax = 0x400;
@@ -1352,16 +1367,12 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if type1 == 14 || type1 == 13 {
-        //if type2 == 1 {
-        //    println!("received {} {} data: {:?}", type1, type2, slic);
-        //}
-
         if type2 == 4 {
             HAS_LOADED = true;
             //println!("has loaded !");
         }
 
-        if type2 == 8 || type2 == 1 {
+        if type2 == 8 {
             if let Some(gr) = LAST_GAME_REQUEST {
                 send_packet_untagged(Box::new(gr));
             }
@@ -1463,7 +1474,6 @@ unsafe fn read_key_better(key: u8) -> bool {
 }
 
 unsafe fn read_current_input() -> [bool; 10] {
-    //return ([false; 10], 0);
     let local_input_manager = 0x898938;
     let raw_input_buffer = 0x8a01b8;
     let mut input = [false; 10];
