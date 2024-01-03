@@ -1302,13 +1302,9 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             slic.copy_from_slice(&P2_PACKETS)
         }
     } else if type1 == 0x6c {
-
-         
-
         let buf = [0x6d, 0x61];
         let sock = *(((*a).edi + 0x28) as *const u32);
         let to = (*a).esp + 0x44;
-
 
         windows::Win32::Networking::WinSock::sendto(
             std::mem::transmute::<u32, windows::Win32::Networking::WinSock::SOCKET>(sock),
@@ -1317,7 +1313,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             to as *const windows::Win32::Networking::WinSock::SOCKADDR,
             0x10,
         );
-
 
         (*a).eax = 0x400;
     } else if type1 > 0x6c && type1 <= 0x80 {
@@ -1661,6 +1656,7 @@ unsafe fn handle_online(
 
         let input = read_current_input();
         let speed = netcoder.process_and_send(rollbacker, input);
+
         *cur_speed = speed;
 
         if speed == 0 {
