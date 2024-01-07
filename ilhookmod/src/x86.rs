@@ -180,6 +180,7 @@ impl Hooker {
     /// 4. Set `NOT_MODIFY_MEMORY_PROTECT` where it should not be set.
     /// 5. hook or unhook from 2 or more threads at the same time without `HookFlags::NOT_MODIFY_MEMORY_PROTECT`. Because of memory protection colliding.
     /// 6. Other unpredictable errors.
+    #[must_use]
     pub unsafe fn hook(self, len: usize) -> HookPoint {
         let origin = get_moving_insts(self.addr, len);
         let ol = origin.len() as u8;

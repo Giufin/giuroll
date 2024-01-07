@@ -239,8 +239,14 @@ impl Rollbacker {
             }
             */
 
-            let si = self.self_inputs[self.current];
-            let ei = self.enemy_inputs.get(self.current);
+            //if self.current != unsafe { *SOKU_FRAMECOUNT } {
+            //    println!("here");
+            //}
+
+            let current = unsafe {*SOKU_FRAMECOUNT};
+
+            let si = self.self_inputs[current];
+            let ei = self.enemy_inputs.get(current);
             Self::apply_input(si, ei);
             self.guessed.push(RollFrame::dump_with_guess(si, ei));
 
