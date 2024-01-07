@@ -7,7 +7,10 @@ use std::{
 };
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
-use crate::{input_to_accum, rollback::Rollbacker, SOKU_FRAMECOUNT, TARGET_OFFSET};
+use crate::{
+    input_to_accum, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED, SOKU_FRAMECOUNT,
+    TARGET_OFFSET,
+};
 
 #[derive(Clone, Debug)]
 pub struct NetworkPacket {
@@ -41,7 +44,7 @@ impl NetworkPacket {
 
         buf[next..next + 4].copy_from_slice(&self.last_confirm.to_le_bytes());
         let next = next + 4;
-        
+
         buf[next..next + 4].copy_from_slice(&self.sync.unwrap_or(i32::MAX).to_le_bytes());
         let last = next + 4;
 
@@ -300,15 +303,21 @@ impl Netcoder {
                     .cloned()
                     .unwrap_or(0);
                 if weather_remote != weather_local {
-                    #[cfg(feature = "allocconsole")]
-                    println!("desync");
-
+                    //#[cfg(feature = "allocconsole")]
+                    //println!("desync");
+                    unsafe {
+                        LIKELY_DESYNCED = true;
+                    }
                     //todo, add different desync indication !
                     #[cfg(feature = "logtofile")]
                     info!(
                         "DESYNC: local: {}, remote: {}",
                         weather_local, weather_remote
                     )
+                } else {
+                    unsafe {
+                        LIKELY_DESYNCED = false;
+                    }
                 }
             }
 
@@ -396,7 +405,8 @@ impl Netcoder {
 
         let m = rollbacker.start();
 
-        let diff = (self.id - unsafe { *SOKU_FRAMECOUNT }) as i64;
+        let diff = self.id as i64 - unsafe { *SOKU_FRAMECOUNT } as i64;
+
         let m = if diff < (self.delay as i64) {
             m.saturating_sub(1)
         } else if diff > (self.delay as i64) {
@@ -504,7 +514,7 @@ impl Netcoder {
                 + self.max_rollback
                 + self.delay.max(self.last_opponent_delay)
         {
-            crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
+            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
             println!(
                 "frame is missing for reason 2: m: {m}, id: {}, confirm: {}",
                 self.id, self.last_opponent_confirm
@@ -528,7 +538,6 @@ impl Netcoder {
             }
 
             self.id += 1;
-
             m as u32
         }
     }
@@ -601,6 +610,9 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
         //to do, change error handling for sockets
 
         //#[cfg(feature = "logtofile")]
-        println!("socket err: {:?}", windows::Win32::Networking::WinSock::WSAGetLastError());
+        println!(
+            "socket err: {:?}",
+            windows::Win32::Networking::WinSock::WSAGetLastError()
+        );
     }
 }

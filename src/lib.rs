@@ -140,7 +140,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.11";
+const VER: &str = "0.6.12";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -486,6 +486,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         LAST_GAME_REQUEST = None;
         LAST_MATCH_ACK = None;
         LAST_MATCH_LOAD = None;
+        LIKELY_DESYNCED = false;
 
         REQUESTED_THREAD_ID.store(0, Relaxed);
         NEXT_DRAW_PING = None;
@@ -1186,6 +1187,12 @@ fn store_alloc(u: usize) {
     }
 }
 
+static mut LIKELY_DESYNCED: bool = false;
+
+pub extern "cdecl" fn is_likely_desynced() -> bool {
+    unsafe { LIKELY_DESYNCED }
+}
+
 unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     let (s, flags, heap) = unsafe {
         (
@@ -1292,14 +1299,17 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     //println!("{} , {}", &slic[0], &slic[1]);
 
+
     if type1 == 0x6e {
         //opponent esc
-        ESC2.store(1, Relaxed);
+        if BATTLE_STARTED {
+            ESC2.store(1, Relaxed);
 
-        if !is_p1() {
-            slic.copy_from_slice(&P1_PACKETS)
-        } else {
-            slic.copy_from_slice(&P2_PACKETS)
+            if !is_p1() {
+                slic.copy_from_slice(&P1_PACKETS)
+            } else {
+                slic.copy_from_slice(&P2_PACKETS)
+            }
         }
     } else if type1 == 0x6c {
         let buf = [0x6d, 0x61];
