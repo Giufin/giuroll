@@ -140,7 +140,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.12";
+const VER: &str = "0.6.13";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
@@ -1189,6 +1189,7 @@ fn store_alloc(u: usize) {
 
 static mut LIKELY_DESYNCED: bool = false;
 
+#[no_mangle]
 pub extern "cdecl" fn is_likely_desynced() -> bool {
     unsafe { LIKELY_DESYNCED }
 }
@@ -1298,7 +1299,6 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //   let input2 = slic[9];
 
     //println!("{} , {}", &slic[0], &slic[1]);
-
 
     if type1 == 0x6e {
         //opponent esc
