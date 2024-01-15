@@ -302,7 +302,7 @@ impl Netcoder {
                     .get(&(packet.id.saturating_sub(20)))
                     .cloned()
                     .unwrap_or(0);
-                if  weather_remote != weather_local || weather_remote == 0 || weather_local == 0 {
+                if  weather_remote != weather_local {
                     //#[cfg(feature = "allocconsole")]
                     //println!("desync");
                     unsafe {
