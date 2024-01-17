@@ -41,6 +41,11 @@ You can also pause the replay by pressing `z`. When the replay is paused this wa
 Mod can be buit with `cargo` using the `nightly-i686-pc-windows-msvc` toolchain.  
 When building from source please remember to add the `--release`/`-r` flag.
 
+```
+rustup toolchain install nightly-i686-pc-windows-msvc
+cargo +nightly-i686-pc-windows-msvc build --release
+```
+
 ## Common problems  
 
 - Game doesn't load: check if the ini is valid according to the example ini provided in this repository, and is placed alongside the mod without any changes to it's name, and check for mod conflicts by disabling all other mods, and adding them back one by one.  
