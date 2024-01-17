@@ -12,7 +12,7 @@ This repository also contains a stripped down version version of the crate [ilho
 - navigate to your Hisoutensoku folder;
 - You should see a subfolder called `modules`, and a file called `SWRSToys.ini`
 - drop the giuroll folder from this zip into `modules`
-- add the following line into your `SWRSTOYS.ini`
+- add the following line into your `SWRSToys.ini`
 `giuroll=modules/giuroll/giuroll.dll`
 
 - find the following line
@@ -21,15 +21,9 @@ This repository also contains a stripped down version version of the crate [ilho
 `; SWRSokuRoll=modules/SWRSokuRoll/SWRSokuRoll.dll`
 
 ### For users without SWRSToys
-Mod can be loaded using the [Injector](/injector/).  
-The injector needs to be built from source, and placed alongside the dll and the ini, which can be found in official releases.
-- Start th123.exe 
-- Run the injector  
+See the [Injector](/injector/).  
 
-if sucessfull, you should see a message.  
-If the injector closes abruptly, contact me about it.
-
-### More information about the usage in game is available in the `installation and usage.txt` file inside the distributed zip
+**More usage information is available in the `installation and usage.txt` file within the distributed zip file.**
 
 ## Replay rewind  
 
