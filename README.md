@@ -28,7 +28,15 @@ See the [Injector](/injector/).
 ## Replay rewind  
 
 In replay mode pressing `q` will start rewinding, using keys that modify playback speed (A/S/D) will affect the rewind speed.  
-You can also pause the replay by pressing `z`. When the replay is paused this way you can move frame by frame, backwards or forwards, by using `s` and `d`
+You can also pause the replay by pressing `z`. When the replay is paused this way you can move frame by frame, backwards or forwards, by using `s` and `d`.
+
+## Desync detection
+Giuroll is able to detect desyncs intrinsically, but displaying them in-game requires a [secondary mod](https://github.com/kookie2332/Giuroll-Desync-Detector).
+
+There is no guarantee that the desync detector will always correctly identify when a game is desynced or not. You can contact me if they:
+- are common,
+- persist after game restarts, or
+- do not occur when using SokuRoll
 
 ## Building from source
 
@@ -44,8 +52,6 @@ cargo +nightly-i686-pc-windows-msvc build --release
 
 - Game doesn't load: check if the ini is valid according to the example ini provided in this repository, and is placed alongside the mod without any changes to it's name, and check for mod conflicts by disabling all other mods, and adding them back one by one.  
 - Failed to connect: either player is using an incompatible version of giuroll, or is not using it at all.  
-- Game desynced: I'm planning on adding a desync detector to make debugging desyncs easier, but since desyncs also occur with SokuRoll there is no guarantee they are caused solely by the rollback. If the desyncs are common, persists between game restarts, and are not appearing with Sokuroll, you can contact me about it.
-
 
 you can contact me about any issues through discord: `@giufin` in DMs.
 
