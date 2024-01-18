@@ -9,16 +9,20 @@ This repository also contains a stripped down version version of the crate [ilho
 ## Usage  
 
 ### For [SWRSToys](https://github.com/SokuDev/SokuMods/) users
-- navigate to your Hisoutensoku folder;
-- You should see a subfolder called `modules`, and a file called `SWRSToys.ini`
-- drop the giuroll folder from this zip into `modules`
-- add the following line into your `SWRSToys.ini`
-`giuroll=modules/giuroll/giuroll.dll`
-
-- find the following line
-`SWRSokuRoll=modules/SWRSokuRoll/SWRSokuRoll.dll`
-- add a `;` at the beginning of that line, making it
-`; SWRSokuRoll=modules/SWRSokuRoll/SWRSokuRoll.dll`
+1. Navigate to your Hisoutensoku folder. You should see a subfolder called `modules`, and a file called `SWRSToys.ini`.
+2. Drop the giuroll folder from this zip into `modules`
+3. Add the following line into your `SWRSToys.ini`
+```
+giuroll=modules/giuroll/giuroll.dll
+```
+4. find the following line
+`
+SWRSokuRoll=modules/SWRSokuRoll/SWRSokuRoll.dll
+`
+and add a `;` at the beginning of that line, making it
+```
+; SWRSokuRoll=modules/SWRSokuRoll/SWRSokuRoll.dll
+```
 
 ### For users without SWRSToys
 See the [Injector](/injector/).  
