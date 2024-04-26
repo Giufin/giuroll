@@ -1,16 +1,61 @@
 use crate::{
-    pause, read_key_better, resume,
+    pause, read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame},
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
+    ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, REAL_INPUT, REAL_INPUT2,
+    SOKU_FRAMECOUNT,
 };
-use std::sync::{
-    atomic::{AtomicU8, Ordering::Relaxed},
-    Mutex,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
+        Mutex,
+    },
 };
+
+struct RePlayRePlay {
+    frame: usize,
+    p1_inputs: HashMap<usize, [bool; 10]>,
+    p2_inputs: HashMap<usize, [bool; 10]>,
+    is_p2: bool,
+}
+
+impl RePlayRePlay {
+    fn new(frame: usize, is_p1: bool) -> Self {
+        Self {
+            frame,
+            p1_inputs: HashMap::new(),
+            p2_inputs: HashMap::new(),
+            is_p2: is_p1,
+        }
+    }
+
+    fn read_input(&mut self) {
+        let map = if self.is_p2 {
+            &mut self.p1_inputs
+        } else {
+            &mut self.p2_inputs
+        };
+
+        unsafe { map.insert(*SOKU_FRAMECOUNT, read_current_input()) };
+    }
+
+    fn apply_input(&self) {
+        unsafe {
+            let fc = *SOKU_FRAMECOUNT;
+            REAL_INPUT2 = self.p1_inputs.get(&fc).copied();
+
+            REAL_INPUT = self.p2_inputs.get(&fc).copied();
+        }
+    }
+}
+
+static mut RE_PLAY_PAUSE: usize = 0;
 
 static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+static mut RE_PLAY: Option<RePlayRePlay> = None;
 
 static PAUSESTATE: AtomicU8 = AtomicU8::new(0);
+static mut DISABLE_PAUSE: bool = false;
 
 static IS_REWINDING: AtomicU8 = AtomicU8::new(0);
 static mut REWIND_PRESSED_LAST_FRAME: bool = false;
@@ -23,22 +68,40 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
     const ABUTTON: *mut usize = (0x89a248 + 0x40) as *mut usize;
     let a_input = *ABUTTON;
     *ABUTTON = 0;
-
-    match (a_input, pstate) {
-        (0, 1) => PAUSESTATE.store(2, Relaxed),
-        (0, _) => (),
-        (1, 0) => PAUSESTATE.store(1, Relaxed),
-        (1, 1) => (),
-        (1, 2) => PAUSESTATE.store(0, Relaxed),
-        _ => (),
+    if DISABLE_PAUSE {
+    } else {
+        match (a_input, pstate) {
+            (0, 1) => PAUSESTATE.store(2, Relaxed),
+            (0, _) => (),
+            (1, 0) => PAUSESTATE.store(1, Relaxed),
+            (1, 1) => (),
+            (1, 2) => PAUSESTATE.store(0, Relaxed),
+            _ => (),
+        }
     }
-
     //if ISDEBUG { info!("input: {:?}", input[16]) };
 }
 
 pub unsafe fn clean_replay_statics() {
     for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
         a.did_happen();
+    }
+
+    RE_PLAY = None;
+    DISABLE_PAUSE = false;
+}
+
+pub unsafe extern "cdecl" fn disable_x_in_takeover(
+    a: *mut ilhook::x86::Registers,
+    _b: usize,
+    _c: usize,
+) -> usize {
+    let should_jump = (*a).ebp == *(((*a).eax + 0x44) as *const u32);
+
+    if RE_PLAY.is_some() || !should_jump {
+        0x4826bb
+    } else {
+        0x4825e5
     }
 }
 
@@ -60,10 +123,77 @@ pub unsafe fn handle_replay(
             x.allocs.retain(|x| *x != man);
         }
     }
+
+    let scheme = [0x02, 0x03, 0x04, 0x05];
+    //let scheme = [0x10, 0x11, 0x12, 0x13];
+
     let mut override_target_frame = None;
+    let qdown = read_key_better(scheme[0]);
+    if qdown {
+        if let Some(rprp) = RE_PLAY.take() {
+            override_target_frame = Some(rprp.frame as u32 - 1);
+            DISABLE_PAUSE = false;
+        }
+    }
+
+    let wdown = read_key_better(scheme[1]);
+    if wdown {
+        if let Some(x) = &mut RE_PLAY {
+            x.is_p2 = false;
+            override_target_frame = Some(x.frame as u32 - 1);
+            RE_PLAY_PAUSE = 40;
+        } else {
+            RE_PLAY = Some(RePlayRePlay::new(framecount, false));
+        }
+    }
+
+    let edown = read_key_better(scheme[2]);
+    if edown {
+        if let Some(x) = &mut RE_PLAY {
+            x.is_p2 = true;
+            override_target_frame = Some(x.frame as u32 - 1);
+            RE_PLAY_PAUSE = 40;
+        } else {
+            RE_PLAY = Some(RePlayRePlay::new(framecount, true));
+        }
+    }
+
+    if wdown || edown {
+        RE_PLAY_PAUSE = 40;
+        RE_PLAY_PAUSE = 40;
+        DISABLE_PAUSE = true;
+    }
+
+    let rdown = read_key_better(scheme[3]);
+    if rdown {
+        if let Some(rprp) = &RE_PLAY {
+            override_target_frame = Some(rprp.frame as u32 - 1);
+            RE_PLAY_PAUSE = 40;
+        }
+    }
+
+    if let Some(rprp) = &mut RE_PLAY {
+        if rprp.frame + 1 < *SOKU_FRAMECOUNT {
+            *cur_speed = 1;
+
+            rprp.read_input();
+            rprp.apply_input()
+        }
+    }
+
+    if RE_PLAY_PAUSE == 1 {
+        RE_PLAY_PAUSE -= 1;
+        PAUSESTATE.store(0, Relaxed);
+    } else if RE_PLAY_PAUSE > 1 {
+        RE_PLAY_PAUSE -= 1;
+        PAUSESTATE.store(1, Relaxed);
+    }
 
     resume(battle_state);
     if *cur_speed_iter == 0 && PAUSESTATE.load(Relaxed) != 0 && override_target_frame.is_none() {
+        if RE_PLAY.is_some() {
+            REWIND_PRESSED_LAST_FRAME = true
+        }
         match (*cur_speed, REWIND_PRESSED_LAST_FRAME) {
             (16, false) => {
                 REWIND_PRESSED_LAST_FRAME = true;
@@ -86,13 +216,38 @@ pub unsafe fn handle_replay(
         *cur_speed = 1;
     }
 
+    /*
+       let wthr = 0x8971d0;
+       if *(wthr as *const usize) != 11 && read_key_better(0x18) {
+           *cur_speed = 1024;
+       }
+
+       if *cur_speed == 1024 && read_key_better(0x18) && *(wthr as *const usize) == 11{
+           *cur_speed_iter = 1024;
+       }
+    */
+    if RE_PLAY.is_none() {
+        let speed = 4096;
+
+        let condition = matches!(battle_state, 5 | 3);
+        let key = read_key_better(0x18);
+
+        if !condition && key {
+            *cur_speed = speed;
+        }
+
+        if *cur_speed == speed && key && condition {
+            *cur_speed_iter = speed;
+        }
+    }
+
     if *cur_speed_iter == 0 {
         //"true" frame
 
         IS_REWINDING.store(0, Relaxed);
         let qdown = read_key_better(0x10);
 
-        if qdown || override_target_frame.is_some() {
+        if (qdown && RE_PLAY.is_none()) || override_target_frame.is_some() {
             let target = if let Some(x) = override_target_frame {
                 x
             } else {
@@ -116,7 +271,7 @@ pub unsafe fn handle_replay(
                         IS_REWINDING.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
-                        
+
                         x.clone().restore();
                         //x.did_happen();
                         //dump_frame();
@@ -168,7 +323,6 @@ pub unsafe fn handle_replay(
     let framecount = *SOKU_FRAMECOUNT;
 
     if framecount % 16 == 1 || IS_REWINDING.load(Relaxed) == 1 {
-        
         let frame = dump_frame();
 
         let mut mutex = FRAMES.lock().unwrap();
