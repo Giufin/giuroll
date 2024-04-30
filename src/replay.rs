@@ -82,6 +82,18 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
     //if ISDEBUG { info!("input: {:?}", input[16]) };
 }
 
+pub unsafe extern "cdecl" fn is_replay_over(
+    a: *mut ilhook::x86::Registers,
+    _b: usize,
+    _c: usize,
+) -> usize {
+    // https://stackoverflow.com/a/46134764
+    let ori_fun: unsafe extern "fastcall" fn(u32) -> bool =
+        unsafe { std::mem::transmute(0x00480860) };
+    (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none()) as u32;
+    return 0x00482689 + 5;
+}
+
 pub unsafe fn clean_replay_statics() {
     for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
         a.did_happen();

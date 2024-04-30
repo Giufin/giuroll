@@ -1077,6 +1077,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         })
     };
 
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x00482689, HookType::JmpToRet(is_replay_over), 0).hook(5)
+    };
+    std::mem::forget(new);
+
     Some(())
 }
 
@@ -1232,7 +1237,7 @@ use core::sync::atomic::AtomicU8;
 
 use crate::{
     netcode::{send_packet, send_packet_untagged},
-    replay::{apause, clean_replay_statics, handle_replay},
+    replay::{apause, clean_replay_statics, handle_replay, is_replay_over},
     rollback::CHARSIZEDATA,
 };
 
