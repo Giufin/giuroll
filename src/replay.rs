@@ -89,6 +89,7 @@ pub unsafe fn clean_replay_statics() {
 
     RE_PLAY = None;
     DISABLE_PAUSE = false;
+    set_keys_availability_in_takeover(true);
 }
 
 pub unsafe extern "cdecl" fn disable_x_in_takeover(
@@ -102,6 +103,18 @@ pub unsafe extern "cdecl" fn disable_x_in_takeover(
         0x4826bb
     } else {
         0x4825e5
+    }
+}
+
+unsafe fn set_keys_availability_in_takeover(enable: bool) {
+    for n in 0..=1 {
+        let input_manager = *((0x00898680 as *const *mut u32).offset(n));
+        if input_manager != 0 as *mut u32 {
+            if !enable {
+                *input_manager.offset(0x18) = 0; // clear InputManager.inKeys
+            }
+            *input_manager.offset(0x19) = !enable as u32; // InputManager.readInKeys
+        }
     }
 }
 
@@ -133,6 +146,7 @@ pub unsafe fn handle_replay(
         if let Some(rprp) = RE_PLAY.take() {
             override_target_frame = Some(rprp.frame as u32 - 1);
             DISABLE_PAUSE = false;
+            set_keys_availability_in_takeover(true);
         }
     }
 
@@ -162,6 +176,7 @@ pub unsafe fn handle_replay(
         RE_PLAY_PAUSE = 40;
         RE_PLAY_PAUSE = 40;
         DISABLE_PAUSE = true;
+        set_keys_availability_in_takeover(false);
     }
 
     let rdown = read_key_better(scheme[3]);
