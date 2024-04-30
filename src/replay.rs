@@ -118,6 +118,54 @@ unsafe fn set_keys_availability_in_takeover(enable: bool) {
     }
 }
 
+unsafe fn set_keybinding_by_index(
+    p_profile_info_src: *const i8,
+    p_profile_info_dst: *mut i8,
+    index: i8,
+) {
+    // reimplement Soku function 0x00434bf0
+    *p_profile_info_dst.offset(0x1a8) = index;
+    if index == -1 {
+        // keyboard
+        // apply keybinding
+        p_profile_info_src
+            .offset(0x140)
+            .copy_to_nonoverlapping(p_profile_info_dst.offset(0xd0).offset(4), 0x34);
+    } else if *(0x008a02b8 as *const i8) <= index {
+        // if controller counter <= index
+        *p_profile_info_dst.offset(0xd0).offset(4) = -2;
+        p_profile_info_dst
+            .offset(0xd0)
+            .offset(4 + 1)
+            .write_bytes(0, 0x34 - 1);
+    } else {
+        p_profile_info_src
+            .offset(0x174 + 1)
+            .copy_to_nonoverlapping(p_profile_info_dst.offset(0xd0).offset(4 + 1), 0x34 - 1);
+        *p_profile_info_dst.offset(0xd0).offset(4) = index;
+    }
+}
+
+unsafe fn load_keybinding() {
+    // (partially) reimplement Soku 0x0043f0eb ~ 0x0043f123
+    let p1_controller_index = *(0x00898678 as *const i8);
+    set_keybinding_by_index(
+        0x00898868 as *const i8,
+        0x00898868 as *mut i8,
+        p1_controller_index,
+    );
+    // set p2:
+    // let mut p2_controller_index = *(0x00898679 as *const i8);
+    // if (p1_controller_index == -1 && p2_controller_index == -2) {
+    //     p2_controller_index = -1;
+    // }
+    // set_keybinding_by_index(
+    //     0x00899054 as *const i8,
+    //     0x00899054 as *mut i8,
+    //     p2_controller_index,
+    // );
+}
+
 pub unsafe fn handle_replay(
     framecount: usize,
     battle_state: &mut u32,
@@ -177,6 +225,7 @@ pub unsafe fn handle_replay(
         RE_PLAY_PAUSE = 40;
         DISABLE_PAUSE = true;
         set_keys_availability_in_takeover(false);
+        load_keybinding();
     }
 
     let rdown = read_key_better(scheme[3]);
