@@ -101,7 +101,9 @@ pub unsafe fn clean_replay_statics() {
 
     RE_PLAY = None;
     DISABLE_PAUSE = false;
-    set_keys_availability_in_takeover(true);
+    if !RE_PLAY.is_none() {
+        set_keys_availability_in_takeover(true);
+    }
 }
 
 pub unsafe extern "cdecl" fn disable_x_in_takeover(
