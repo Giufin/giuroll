@@ -99,10 +99,10 @@ pub unsafe fn clean_replay_statics() {
         a.did_happen();
     }
 
-    RE_PLAY = None;
     DISABLE_PAUSE = false;
-    if !RE_PLAY.is_none() {
+    if RE_PLAY.is_some() {
         set_keys_availability_in_takeover(true);
+        RE_PLAY = None;
     }
 }
 
