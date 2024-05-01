@@ -82,13 +82,28 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
     //if ISDEBUG { info!("input: {:?}", input[16]) };
 }
 
+pub unsafe extern "cdecl" fn is_replay_over(
+    a: *mut ilhook::x86::Registers,
+    _b: usize,
+    _c: usize,
+) -> usize {
+    // https://stackoverflow.com/a/46134764
+    let ori_fun: unsafe extern "fastcall" fn(u32) -> bool =
+        unsafe { std::mem::transmute(0x00480860) };
+    (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none()) as u32;
+    return 0x00482689 + 5;
+}
+
 pub unsafe fn clean_replay_statics() {
     for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
         a.did_happen();
     }
 
-    RE_PLAY = None;
     DISABLE_PAUSE = false;
+    if RE_PLAY.is_some() {
+        set_keys_availability_in_takeover(true);
+        RE_PLAY = None;
+    }
 }
 
 pub unsafe extern "cdecl" fn disable_x_in_takeover(
@@ -105,12 +120,73 @@ pub unsafe extern "cdecl" fn disable_x_in_takeover(
     }
 }
 
+unsafe fn set_keys_availability_in_takeover(enable: bool) {
+    for n in 0..=1 {
+        let input_manager = *((0x00898680 as *const *mut u32).offset(n));
+        if input_manager != 0 as *mut u32 {
+            if !enable {
+                *input_manager.offset(0x18) = 0; // clear InputManager.inKeys
+            }
+            *input_manager.offset(0x19) = !enable as u32; // InputManager.readInKeys
+        }
+    }
+}
+
+unsafe fn set_keybinding_by_index(
+    p_profile_info_src: *const i8,
+    p_profile_info_dst: *mut i8,
+    index: i8,
+) {
+    // reimplement Soku function 0x00434bf0
+    *p_profile_info_dst.offset(0x1a8) = index;
+    if index == -1 {
+        // keyboard
+        // apply keybinding
+        p_profile_info_src
+            .offset(0x140)
+            .copy_to_nonoverlapping(p_profile_info_dst.offset(0xd0).offset(4), 0x34);
+    } else if *(0x008a02b8 as *const i8) <= index {
+        // if controller counter <= index
+        *p_profile_info_dst.offset(0xd0).offset(4) = -2;
+        p_profile_info_dst
+            .offset(0xd0)
+            .offset(4 + 1)
+            .write_bytes(0, 0x34 - 1);
+    } else {
+        p_profile_info_src
+            .offset(0x174 + 1)
+            .copy_to_nonoverlapping(p_profile_info_dst.offset(0xd0).offset(4 + 1), 0x34 - 1);
+        *p_profile_info_dst.offset(0xd0).offset(4) = index;
+    }
+}
+
+unsafe fn load_keybinding() {
+    // (partially) reimplement Soku 0x0043f0eb ~ 0x0043f123
+    let p1_controller_index = *(0x00898678 as *const i8);
+    set_keybinding_by_index(
+        0x00898868 as *const i8,
+        0x00898868 as *mut i8,
+        p1_controller_index,
+    );
+    // set p2:
+    // let mut p2_controller_index = *(0x00898679 as *const i8);
+    // if (p1_controller_index == -1 && p2_controller_index == -2) {
+    //     p2_controller_index = -1;
+    // }
+    // set_keybinding_by_index(
+    //     0x00899054 as *const i8,
+    //     0x00899054 as *mut i8,
+    //     p2_controller_index,
+    // );
+}
+
 pub unsafe fn handle_replay(
     framecount: usize,
     battle_state: &mut u32,
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
     weird_counter: &mut u32,
+    scheme: &[u8;4]
 ) {
     if let Some(x) = FRAMES.lock().unwrap().last_mut() {
         //TODO
@@ -124,7 +200,7 @@ pub unsafe fn handle_replay(
         }
     }
 
-    let scheme = [0x02, 0x03, 0x04, 0x05];
+    //let scheme = [0x02, 0x03, 0x04, 0x05];
     //let scheme = [0x10, 0x11, 0x12, 0x13];
 
     let mut override_target_frame = None;
@@ -133,6 +209,7 @@ pub unsafe fn handle_replay(
         if let Some(rprp) = RE_PLAY.take() {
             override_target_frame = Some(rprp.frame as u32 - 1);
             DISABLE_PAUSE = false;
+            set_keys_availability_in_takeover(true);
         }
     }
 
@@ -162,6 +239,8 @@ pub unsafe fn handle_replay(
         RE_PLAY_PAUSE = 40;
         RE_PLAY_PAUSE = 40;
         DISABLE_PAUSE = true;
+        set_keys_availability_in_takeover(false);
+        load_keybinding();
     }
 
     let rdown = read_key_better(scheme[3]);
