@@ -184,6 +184,7 @@ pub unsafe fn handle_replay(
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
     weird_counter: &mut u32,
+    scheme: &[u8;4]
 ) {
     if let Some(x) = FRAMES.lock().unwrap().last_mut() {
         //TODO
@@ -197,7 +198,7 @@ pub unsafe fn handle_replay(
         }
     }
 
-    let scheme = [0x02, 0x03, 0x04, 0x05];
+    //let scheme = [0x02, 0x03, 0x04, 0x05];
     //let scheme = [0x10, 0x11, 0x12, 0x13];
 
     let mut override_target_frame = None;

@@ -260,6 +260,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let inc = read_ini_int_hex(&conf, "Keyboard", "increase_delay_key", 0);
     let dec = read_ini_int_hex(&conf, "Keyboard", "decrease_delay_key", 0);
     let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
+    let exit_takeover = read_ini_int_hex(&conf, "Keyboard", "exit_takeover", 0x10);
+    let p1_takeover = read_ini_int_hex(&conf, "Keyboard", "p1_takeover", 0x11);
+    let p2_takeover = read_ini_int_hex(&conf, "Keyboard", "p2_takeover", 0x12);
+    let set_or_retry_takeover = read_ini_int_hex(&conf, "Keyboard", "set_or_retry_takeover", 0x13);
     let spin = read_ini_int_hex(&conf, "FramerateFix", "spin_amount", 1500);
     let f62_enabled = read_ini_bool(&conf, "FramerateFix", "enable_f62", cfg!(feature = "f62"));
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
@@ -331,6 +335,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         INCREASE_DELAY_KEY = inc as u8;
         DECREASE_DELAY_KEY = dec as u8;
         TOGGLE_STAT_KEY = net as u8;
+        TAKEOVER_KEYS_SCHEME[0] = exit_takeover as u8;
+        TAKEOVER_KEYS_SCHEME[1] = p1_takeover as u8;
+        TAKEOVER_KEYS_SCHEME[2] = p2_takeover as u8;
+        TAKEOVER_KEYS_SCHEME[3] = set_or_retry_takeover as u8;
         TOGGLE_STAT = network_menu;
         LAST_DELAY_VALUE = default_delay as usize;
         DEFAULT_DELAY_VALUE = default_delay as usize;
@@ -1562,6 +1570,8 @@ static mut DECREASE_DELAY_KEY: u8 = 0;
 
 static mut TOGGLE_STAT_KEY: u8 = 0;
 
+static mut TAKEOVER_KEYS_SCHEME: [u8; 4] = [0, 0, 0, 0];
+
 static mut TOGGLE_STAT: bool = false;
 static mut LAST_TOGGLE: bool = false;
 
@@ -1722,6 +1732,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
                 cur_speed,
                 cur_speed_iter,
                 state_sub_count,
+                &TAKEOVER_KEYS_SCHEME,
             )
         } //2 is replay
         (1, true) => {
