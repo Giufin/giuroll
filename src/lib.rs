@@ -7,6 +7,7 @@ use std::{
     ffi::{c_void, OsStr},
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
+    ptr::{null, null_mut},
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -32,11 +33,11 @@ use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
-        Foundation::{HMODULE, HWND},
+        Foundation::{HMODULE, HWND, TRUE},
         Networking::WinSock::closesocket,
         System::{
             Console::AllocConsole,
-            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS, PAGE_READWRITE},
         },
     },
 };
@@ -165,6 +166,9 @@ static mut LAST_GAME_REQUEST: Option<[u8; 400]> = None;
 static mut LAST_LOAD_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_LOAD: Option<[u8; 400]> = None;
+
+static mut ORI_BATTLE_WATCH_ON_RENDER: Option<unsafe extern "fastcall" fn(*mut c_void) -> u32> =
+    None;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -1090,6 +1094,31 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
+    let cbattle_battle_vtbl_on_render: *mut unsafe extern "fastcall" fn(*mut c_void) -> u32 =
+        unsafe { std::mem::transmute(0x008574a8) };
+    let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+    unsafe {
+        ORI_BATTLE_WATCH_ON_RENDER = Some(*cbattle_battle_vtbl_on_render);
+        println!("1: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
+        assert_eq!(
+            VirtualProtect(
+                cbattle_battle_vtbl_on_render as *const c_void,
+                4,
+                PAGE_READWRITE,
+                std::ptr::addr_of_mut!(old_prot_ptr),
+            ),
+            TRUE,
+        );
+        *cbattle_battle_vtbl_on_render = my_battle_watch_on_render;
+        println!("2: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
+        VirtualProtect(
+            cbattle_battle_vtbl_on_render as *const c_void,
+            4,
+            old_prot_ptr,
+            std::ptr::addr_of_mut!(old_prot_ptr),
+        );
+    }
+
     Some(())
 }
 
@@ -1245,7 +1274,9 @@ use core::sync::atomic::AtomicU8;
 
 use crate::{
     netcode::{send_packet, send_packet_untagged},
-    replay::{apause, clean_replay_statics, handle_replay, is_replay_over},
+    replay::{
+        apause, clean_replay_statics, handle_replay, is_replay_over, my_battle_watch_on_render,
+    },
     rollback::CHARSIZEDATA,
 };
 
@@ -1586,6 +1617,43 @@ fn draw_num(pos: (f32, f32), num: i32) {
     ) = unsafe { std::mem::transmute::<usize, _>(0x414940) };
 
     drawfn(0x882940 as *const c_void, num, pos.0, pos.1, 0, 0);
+}
+
+fn get_num_length(num: i32, edge_spacing: bool) -> f32 {
+    let mut len: usize = 0;
+    let mut num_ = num;
+    while num_ != 0 {
+        num_ /= 10;
+        len += 1;
+    }
+    if len == 0 {
+        len = 1;
+    }
+    let width = unsafe { *((0x882940 + 0x4) as *const f32) };
+    let spacing = unsafe { *((0x882940 + 0x8) as *const f32) };
+    let scale = unsafe { *((0x882940 + 0xc) as *const f32) };
+    return (width * (len as f32)
+        + spacing * (if edge_spacing { len + 1 } else { len - 1 } as f32))
+        * scale;
+}
+
+fn draw_num_x_center(pos: (f32, f32), num: i32) {
+    let drawfn: extern "thiscall" fn(
+        ptr: *const c_void,
+        number: i32,
+        x: f32,
+        y: f32,
+        a1: i32,
+        a2: u8,
+    ) = unsafe { std::mem::transmute::<usize, _>(0x414940) };
+    drawfn(
+        0x882940 as *const c_void,
+        num,
+        pos.0 + get_num_length(num, false) / 2.0,
+        pos.1,
+        0,
+        0,
+    );
 }
 
 fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
