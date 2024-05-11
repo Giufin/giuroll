@@ -1,15 +1,23 @@
 use crate::{
-    pause, read_current_input, read_key_better, resume,
+    draw_num_x_center, get_num_length, pause, read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame},
-    ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, REAL_INPUT, REAL_INPUT2,
-    SOKU_FRAMECOUNT,
+    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, INSIDE_COLOR, INSIDE_HALF_HEIGHT,
+    INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,
+    ORI_BATTLE_WATCH_ON_RENDER, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR,
+    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::HashMap,
+    os::raw::c_void,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
         Mutex,
     },
+    u32,
+};
+use winapi::shared::{
+    d3d9::IDirect3DDevice9,
+    d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_RGBA, D3DPT_TRIANGLEFAN, D3DRECT},
 };
 
 struct RePlayRePlay {
@@ -80,6 +88,88 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
         }
     }
     //if ISDEBUG { info!("input: {:?}", input[16]) };
+}
+
+static mut D3D9_DEVICE: *mut *mut IDirect3DDevice9 = 0x008A0E30 as *mut *mut IDirect3DDevice9;
+
+pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> u32 {
+    let gametype_main = *(0x898688 as *const u32);
+    let is_netplay = *(0x8986a0 as *const usize) != 0;
+    assert!(ORI_BATTLE_WATCH_ON_RENDER.is_some());
+    let ret = match ORI_BATTLE_WATCH_ON_RENDER {
+        None => 0,
+        Some(ori_fun) => ori_fun(this),
+    };
+    if is_netplay || gametype_main != 2 || RE_PLAY.is_none() {
+        return ret;
+    }
+
+    let crenderer_begin: unsafe extern "cdecl" fn() = std::mem::transmute(0x00401000);
+    let crenderer_end: unsafe extern "fastcall" fn(*const c_void) = std::mem::transmute(0x00401040);
+
+    let mut center_x = CENTER_X_P1;
+    let mut center_y = CENTER_Y_P1;
+    if let Some(replay) = &RE_PLAY
+        && replay.is_p2
+    {
+        center_x = CENTER_X_P2;
+        center_y = CENTER_Y_P2;
+    }
+
+    crenderer_begin();
+
+    if RE_PLAY_PAUSE == 0
+        && let Some(replay) = &RE_PLAY
+    {
+        let frame_count = (*SOKU_FRAMECOUNT - replay.frame) as i32;
+        let frame_half_len = (get_num_length(frame_count, true) / 2.0) as i32;
+        let outer = D3DRECT {
+            x1: center_x - frame_half_len,
+            x2: center_x + frame_half_len,
+            y1: center_y - OUTER_HALF_HEIGHT,
+            y2: center_y + OUTER_HALF_HEIGHT,
+        };
+        (**D3D9_DEVICE).Clear(1, &outer, D3DCLEAR_TARGET, TAKEOVER_COLOR, 0.0, 0);
+        draw_num_x_center(
+            (center_x as f32, (center_y - INSIDE_HALF_HEIGHT) as f32),
+            frame_count,
+        );
+    } else {
+        let outer = D3DRECT {
+            x1: center_x - OUTER_HALF_WIDTH,
+            x2: center_x + OUTER_HALF_WIDTH,
+            y1: center_y - OUTER_HALF_HEIGHT,
+            y2: center_y + OUTER_HALF_HEIGHT,
+        };
+        (**D3D9_DEVICE).Clear(1, &outer, D3DCLEAR_TARGET, OUTER_COLOR, 0.0, 0);
+
+        let progress_length: i32 = 2 * INSIDE_HALF_WIDTH * (40 - RE_PLAY_PAUSE as i32) / 40;
+
+        let inside = D3DRECT {
+            x1: center_x - INSIDE_HALF_WIDTH,
+            x2: center_x - INSIDE_HALF_WIDTH + progress_length,
+            y1: center_y - INSIDE_HALF_HEIGHT,
+            y2: center_y + INSIDE_HALF_HEIGHT,
+        };
+        (**D3D9_DEVICE).Clear(1, &inside, D3DCLEAR_TARGET, PROGRESS_COLOR, 0.0, 0);
+
+        let progress = D3DRECT {
+            x1: center_x - INSIDE_HALF_WIDTH + progress_length,
+            x2: center_x + INSIDE_HALF_WIDTH,
+            y1: center_y - INSIDE_HALF_HEIGHT,
+            y2: center_y + INSIDE_HALF_HEIGHT,
+        };
+        (**D3D9_DEVICE).Clear(1, &progress, D3DCLEAR_TARGET, INSIDE_COLOR, 0.0, 0);
+
+        draw_num_x_center(
+            (center_x as f32, (center_y - INSIDE_HALF_HEIGHT) as f32),
+            RE_PLAY_PAUSE as i32,
+        );
+    }
+
+    crenderer_end(0x896b4c as *const c_void);
+
+    return ret;
 }
 
 pub unsafe extern "cdecl" fn is_replay_over(

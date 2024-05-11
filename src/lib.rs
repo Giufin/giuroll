@@ -7,6 +7,7 @@ use std::{
     ffi::{c_void, OsStr},
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
+    ptr::{null, null_mut},
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -32,11 +33,11 @@ use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
-        Foundation::{HMODULE, HWND},
+        Foundation::{HMODULE, HWND, TRUE},
         Networking::WinSock::closesocket,
         System::{
             Console::AllocConsole,
-            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS, PAGE_READWRITE},
         },
     },
 };
@@ -73,7 +74,10 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
     Ok(())
 }
 
-use winapi::um::libloaderapi::GetModuleFileNameW;
+use winapi::{
+    shared::d3d9types::{D3DCOLOR, D3DCOLOR_ARGB},
+    um::libloaderapi::GetModuleFileNameW,
+};
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 
@@ -165,6 +169,22 @@ static mut LAST_GAME_REQUEST: Option<[u8; 400]> = None;
 static mut LAST_LOAD_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_LOAD: Option<[u8; 400]> = None;
+
+static mut ORI_BATTLE_WATCH_ON_RENDER: Option<unsafe extern "fastcall" fn(*mut c_void) -> u32> =
+    None;
+
+static mut OUTER_COLOR: D3DCOLOR = 0;
+static mut INSIDE_COLOR: D3DCOLOR = 0;
+static mut PROGRESS_COLOR: D3DCOLOR = 0;
+static mut TAKEOVER_COLOR: D3DCOLOR = 0;
+static mut CENTER_X_P1: i32 = 224;
+static mut CENTER_Y_P1: i32 = 428;
+static mut CENTER_X_P2: i32 = 640 - 224;
+static mut CENTER_Y_P2: i32 = 428;
+static mut INSIDE_HALF_HEIGHT: i32 = 7;
+static mut INSIDE_HALF_WIDTH: i32 = 58;
+static mut OUTER_HALF_HEIGHT: i32 = 9;
+static mut OUTER_HALF_WIDTH: i32 = 60;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -273,6 +293,41 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
+    let outer_color: D3DCOLOR = read_ini_int_hex(
+        &conf,
+        "Takeover",
+        "progress_bar_outer_color",
+        D3DCOLOR_ARGB(0xff, 0xff, 0, 0) as i64,
+    ) as D3DCOLOR;
+    let inside_color: D3DCOLOR = read_ini_int_hex(
+        &conf,
+        "Takeover",
+        "progress_bar_inside_color",
+        D3DCOLOR_ARGB(0xff, 0, 0, 0xff) as i64,
+    ) as D3DCOLOR;
+    let progress_color: D3DCOLOR = read_ini_int_hex(
+        &conf,
+        "Takeover",
+        "progress_bar_progress_color",
+        D3DCOLOR_ARGB(0xff, 0xff, 0xff, 0) as i64,
+    ) as D3DCOLOR;
+    let takeover_color: D3DCOLOR = read_ini_int_hex(
+        &conf,
+        "Takeover",
+        "takeover_color",
+        D3DCOLOR_ARGB(0xff, 0, 0xff, 0) as i64,
+    ) as D3DCOLOR;
+    let center_x_p1 = read_ini_int_hex(&conf, "Takeover", "progress_bar_center_x_p1", 224);
+    let center_y_p1 = read_ini_int_hex(&conf, "Takeover", "progress_bar_center_y_p1", 428);
+    let center_x_p2 = read_ini_int_hex(&conf, "Takeover", "progress_bar_center_x_p2", 640 - 224);
+    let center_y_p2 = read_ini_int_hex(&conf, "Takeover", "progress_bar_center_y_p2", 428);
+    let inside_half_height =
+        read_ini_int_hex(&conf, "Takeover", "progress_bar_inside_half_height", 7);
+    let inside_half_width =
+        read_ini_int_hex(&conf, "Takeover", "progress_bar_inside_half_width", 58);
+    let outer_half_height =
+        read_ini_int_hex(&conf, "Takeover", "progress_bar_outer_half_height", 9);
+    let outer_half_width = read_ini_int_hex(&conf, "Takeover", "progress_bar_outer_half_width", 60);
 
     //soku2 compatibility. Mods should change character size data themselves using exported functions. This is a temporary solution until soku2 team can implement that functionality.
     unsafe {
@@ -344,6 +399,18 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         DEFAULT_DELAY_VALUE = default_delay as usize;
         AUTODELAY_ENABLED = autodelay_enabled;
         AUTODELAY_ROLLBACK = autodelay_rollback as i8;
+        OUTER_COLOR = outer_color;
+        INSIDE_COLOR = inside_color;
+        PROGRESS_COLOR = progress_color;
+        TAKEOVER_COLOR = takeover_color;
+        CENTER_X_P1 = center_x_p1 as i32;
+        CENTER_X_P2 = center_x_p2 as i32;
+        CENTER_Y_P1 = center_y_p1 as i32;
+        CENTER_Y_P2 = center_y_p2 as i32;
+        INSIDE_HALF_HEIGHT = inside_half_height as i32;
+        INSIDE_HALF_WIDTH = inside_half_width as i32;
+        OUTER_HALF_HEIGHT = outer_half_height as i32;
+        OUTER_HALF_WIDTH = outer_half_width as i32;
     }
 
     unsafe {
@@ -1090,6 +1157,31 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
+    let cbattle_battle_vtbl_on_render: *mut unsafe extern "fastcall" fn(*mut c_void) -> u32 =
+        unsafe { std::mem::transmute(0x008574a8) };
+    let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+    unsafe {
+        ORI_BATTLE_WATCH_ON_RENDER = Some(*cbattle_battle_vtbl_on_render);
+        println!("1: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
+        assert_eq!(
+            VirtualProtect(
+                cbattle_battle_vtbl_on_render as *const c_void,
+                4,
+                PAGE_READWRITE,
+                std::ptr::addr_of_mut!(old_prot_ptr),
+            ),
+            TRUE,
+        );
+        *cbattle_battle_vtbl_on_render = my_battle_watch_on_render;
+        println!("2: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
+        VirtualProtect(
+            cbattle_battle_vtbl_on_render as *const c_void,
+            4,
+            old_prot_ptr,
+            std::ptr::addr_of_mut!(old_prot_ptr),
+        );
+    }
+
     Some(())
 }
 
@@ -1245,7 +1337,9 @@ use core::sync::atomic::AtomicU8;
 
 use crate::{
     netcode::{send_packet, send_packet_untagged},
-    replay::{apause, clean_replay_statics, handle_replay, is_replay_over},
+    replay::{
+        apause, clean_replay_statics, handle_replay, is_replay_over, my_battle_watch_on_render,
+    },
     rollback::CHARSIZEDATA,
 };
 
@@ -1586,6 +1680,43 @@ fn draw_num(pos: (f32, f32), num: i32) {
     ) = unsafe { std::mem::transmute::<usize, _>(0x414940) };
 
     drawfn(0x882940 as *const c_void, num, pos.0, pos.1, 0, 0);
+}
+
+fn get_num_length(num: i32, edge_spacing: bool) -> f32 {
+    let mut len: usize = 0;
+    let mut num_ = num;
+    while num_ != 0 {
+        num_ /= 10;
+        len += 1;
+    }
+    if len == 0 {
+        len = 1;
+    }
+    let width = unsafe { *((0x882940 + 0x4) as *const f32) };
+    let spacing = unsafe { *((0x882940 + 0x8) as *const f32) };
+    let scale = unsafe { *((0x882940 + 0xc) as *const f32) };
+    return (width * (len as f32)
+        + spacing * (if edge_spacing { len + 1 } else { len - 1 } as f32))
+        * scale;
+}
+
+fn draw_num_x_center(pos: (f32, f32), num: i32) {
+    let drawfn: extern "thiscall" fn(
+        ptr: *const c_void,
+        number: i32,
+        x: f32,
+        y: f32,
+        a1: i32,
+        a2: u8,
+    ) = unsafe { std::mem::transmute::<usize, _>(0x414940) };
+    drawfn(
+        0x882940 as *const c_void,
+        num,
+        pos.0 + get_num_length(num, false) / 2.0,
+        pos.1,
+        0,
+        0,
+    );
 }
 
 fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
