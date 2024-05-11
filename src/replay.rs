@@ -1,9 +1,10 @@
 use crate::{
-    draw_num, draw_num_x_center, get_num_length, pause, read_current_input, read_key_better,
-    resume,
+    draw_num_x_center, get_num_length, pause, read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame},
-    ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, ORI_BATTLE_WATCH_ON_RENDER,
-    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
+    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, INSIDE_COLOR, INSIDE_HALF_HEIGHT,
+    INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,
+    ORI_BATTLE_WATCH_ON_RENDER, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR,
+    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::HashMap,
@@ -91,18 +92,6 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
 
 static mut D3D9_DEVICE: *mut *mut IDirect3DDevice9 = 0x008A0E30 as *mut *mut IDirect3DDevice9;
 
-static mut CENTER_X_P1: i32 = 224;
-static mut CENTER_Y_P1: i32 = 428;
-static mut CENTER_X_P2: i32 = 640 - 224;
-static mut CENTER_Y_P2: i32 = 428;
-static mut INSIDE_HALF_HEIGHT: i32 = 7;
-static mut INSIDE_HALF_WIDTH: i32 = 58;
-static mut OUTER_HALF_HEIGHT: i32 = 9;
-static mut OUTER_HALF_WIDTH: i32 = 60;
-// static mut OUTER_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0xff, 0, 0, 0xff);
-// static mut INSIDE_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0, 0xff, 0, 0xff);
-// static mut PROGRESS_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0, 0, 0xff, 0xff);
-
 pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> u32 {
     let gametype_main = *(0x898688 as *const u32);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
@@ -118,10 +107,6 @@ pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> 
     let crenderer_begin: unsafe extern "cdecl" fn() = std::mem::transmute(0x00401000);
     let crenderer_end: unsafe extern "fastcall" fn(*const c_void) = std::mem::transmute(0x00401040);
 
-    let OUTER_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0xff, 0, 0, 0xff);
-    let INSIDE_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0, 0, 0xff, 0xff);
-    let PROGRESS_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0xff, 0xff, 0, 0xff);
-    let TAKEOVER_COLOR: D3DCOLOR = D3DCOLOR_RGBA(0x00, 0xff, 0, 0xff);
     let mut center_x = CENTER_X_P1;
     let mut center_y = CENTER_Y_P1;
     if let Some(replay) = &RE_PLAY
