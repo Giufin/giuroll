@@ -170,6 +170,8 @@ static mut LAST_LOAD_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_ACK: Option<[u8; 400]> = None;
 static mut LAST_MATCH_LOAD: Option<[u8; 400]> = None;
 
+static mut IS_FIRST_READ_INPUTS: bool = true;
+
 static mut ORI_BATTLE_WATCH_ON_RENDER: Option<unsafe extern "fastcall" fn(*mut c_void) -> u32> =
     None;
 
@@ -848,11 +850,28 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let real_input = match std::mem::replace(&mut REAL_INPUT, REAL_INPUT2.take()) {
             Some(x) => x,
             None => {
+                IS_FIRST_READ_INPUTS = false;
                 let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>(0x040a370);
                 (f)(input_manager);
                 return;
             }
         };
+        if !IS_FIRST_READ_INPUTS {
+            let gametype_main = *(0x898688 as *const usize);
+            let is_netplay = *(0x8986a0 as *const usize) != 0;
+            if (gametype_main, is_netplay) == (2, false) {
+                // replay mode
+                let set_key = std::mem::transmute::<
+                    usize,
+                    unsafe extern "cdecl" fn(scan_code: u8, status: u8),
+                >(0x0043de50);
+                // F1~F7
+                for k in 0x3b..=0x42 {
+                    set_key(k, 0);
+                }
+            }
+        }
+        IS_FIRST_READ_INPUTS = false;
 
         {
             let td = &mut *((input_manager + 0x38) as *mut i32);
@@ -1850,6 +1869,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     }
     let gametype_main = *(0x898688 as *const usize);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
+    IS_FIRST_READ_INPUTS = true;
 
     match (gametype_main, is_netplay) {
         (2, false) => {
