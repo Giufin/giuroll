@@ -1,3 +1,4 @@
+#![feature(pointer_is_aligned)]
 #![feature(abi_thiscall)]
 #![feature(let_chains)]
 
@@ -41,6 +42,18 @@ use windows::{
         },
     },
 };
+
+#[inline]
+fn ptr_wrap<T>(src: *const T) -> *const T {
+    assert!(src.is_aligned());
+    return src;
+}
+
+#[inline]
+fn ptr_wrap_mut<T>(src: *mut T) -> *mut  T {
+    assert!(src.is_aligned());
+    return src;
+}
 
 //mod netcode;
 // +83E1
@@ -127,6 +140,7 @@ pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
 // 85b8ec some related varible, 487040
 #[no_mangle]
 pub extern "cdecl" fn CheckVersion(a: *const [u8; 16]) -> bool {
+    assert!(a.is_aligned());
     const HASH110A: [u8; 16] = [
         0xdf, 0x35, 0xd1, 0xfb, 0xc7, 0xb5, 0x83, 0x31, 0x7a, 0xda, 0xbe, 0x8c, 0xd9, 0xf5, 0x3b,
         0x2e,
@@ -476,8 +490,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //let sw = REQUESTED_THREAD_ID.swap(0, Relaxed);
 
         (*a).ecx = 0x89f9f8;
-        (*a).eax = *(((*a).esp + 4) as *const u32);
         let soundid = (*a).eax as usize;
+        (*a).eax = *ptr_wrap(((*a).esp + 4) as *const u32);
 
         if !BATTLE_STARTED || soundid == 0 {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
@@ -523,9 +537,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
             // 0x401d81
 
-            let eax = *(((*a).esi + 4) as *const u32);
-            let ecx = *(eax as *const u32);
-            let fun = *((ecx + 0x48) as *const u32);
+            let eax = *ptr_wrap(((*a).esi + 4) as *const u32);
+            let ecx = *ptr_wrap(eax as *const u32);
+            let fun = *ptr_wrap((ecx + 0x48) as *const u32);
             let true_fun = std::mem::transmute::<usize, extern "thiscall" fn(u32, u32 /* , u32*/)>(
                 fun as usize,
             );
@@ -536,7 +550,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             //replicate the usual logic
 
-            if ((*(((*a).esp + 8) as *const usize)) & 1) == 0 {
+            if ((*ptr_wrap(((*a).esp + 8) as *const usize)) & 1) == 0 {
                 0x401d8c
             } else {
                 0x401d81
@@ -690,7 +704,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         _b: usize,
         _c: usize,
     ) -> usize {
-        let framecount_cur = *(((*a).esi + 0x4c) as *const u32);
+        let framecount_cur = *ptr_wrap(((*a).esi + 0x4c) as *const u32);
         let edi = (*a).edi;
 
         //println!("edi: {}, framecount: {}", edi, framecount_cur);
@@ -702,7 +716,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             0042daa9 8b 4e 4c        MOV        ECX,dword ptr [ESI + 0x4c]
             */
 
-            (*a).ebx = *(((*a).esi + 0x48) as *const u32);
+            (*a).ebx = *ptr_wrap(((*a).esi + 0x48) as *const u32);
             (*a).ecx = framecount_cur;
 
             0x42daac
@@ -711,7 +725,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             /*
             0042db1d 8b 5c 24 1c     MOV        EBX,dword ptr [ESP + local_10]
              */
-            (*a).ebx = *(((*a).esp + 0x1c) as *const u32);
+            (*a).ebx = *ptr_wrap(((*a).esp + 0x1c) as *const u32);
             0x42db21
         }
     }
@@ -844,7 +858,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     ) {
         //        0046c902 8b ae 6c        MOV        EBP,dword ptr [ESI + 0x76c]
 
-        (*a).ebp = *(((*a).esi + 0x76c) as *const u32);
+        (*a).ebp = *ptr_wrap(((*a).esi + 0x76c) as *const u32);
         let input_manager = (*a).ecx;
 
         let real_input = match std::mem::replace(&mut REAL_INPUT, REAL_INPUT2.take()) {
@@ -874,8 +888,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         IS_FIRST_READ_INPUTS = false;
 
         {
-            let td = &mut *((input_manager + 0x38) as *mut i32);
-            let lr = &mut *((input_manager + 0x3c) as *mut i32);
+            let td = &mut *ptr_wrap_mut((input_manager + 0x38) as *mut i32);
+            let lr = &mut *ptr_wrap_mut((input_manager + 0x3c) as *mut i32);
 
             match (real_input[0], real_input[1]) {
                 (false, true) => *lr = (*lr).max(0) + 1,
@@ -891,7 +905,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
 
         for a in 0..6 {
-            let v = &mut *((input_manager + 0x40 + a * 4) as *mut u32);
+            let v = &mut *ptr_wrap_mut((input_manager + 0x40 + a * 4) as *mut u32);
 
             if real_input[a as usize + 4] {
                 *v += 1;
@@ -900,7 +914,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             }
         }
 
-        let m = &mut *((input_manager + 0x62) as *mut u16);
+        let m = &mut *ptr_wrap_mut((input_manager + 0x62) as *mut u16);
         *m = 0;
         for a in 0..10 {
             if real_input[a] {
@@ -937,8 +951,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             if skip {
                 0x428360
             } else {
-                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                (*a).eax = *(((*a).ecx) as *const u32);
+                (*a).ecx = *ptr_wrap(((*a).edi + 0x8) as *const u32);
+                (*a).eax = *ptr_wrap(((*a).ecx) as *const u32);
                 0x428335
             }
         }
@@ -976,8 +990,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             if skip {
                 0x428630
             } else {
-                (*a).ecx = *(((*a).edi + 0x8) as *const u32);
-                (*a).eax = *(((*a).ecx) as *const u32);
+                (*a).ecx = *ptr_wrap(((*a).edi + 0x8) as *const u32);
+                (*a).eax = *ptr_wrap(((*a).ecx) as *const u32);
                 0x428605
             }
         }
@@ -1166,7 +1180,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
             windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
                 *(0x89ff90 as *const HWND),
-                windows::core::PCWSTR::from_raw(TITLE.as_ptr()),
+                windows::core::PCWSTR::from_raw(ptr_wrap(TITLE.as_ptr())),
             )
         })
     };
@@ -1245,9 +1259,9 @@ static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
 unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     (*_a).eax = 1;
-    let s = ((*_a).esp as usize + 2 * 4) as *mut usize;
-    let flags = ((*_a).esp as usize + 1 * 4) as *mut usize;
-    let heap = ((*_a).esp as usize + 0 * 4) as *mut usize;
+    let s = ptr_wrap_mut(((*_a).esp as usize + 2 * 4) as *mut usize);
+    let flags = ptr_wrap_mut(((*_a).esp as usize + 1 * 4) as *mut usize);
+    let heap = ptr_wrap_mut(((*_a).esp as usize + 0 * 4) as *mut usize);
 
     //if let Some(x) = MEMORYMUTEX.lock().unwrap().remove(&*s) {
     //    if x != *SOKU_FRAMECOUNT {
@@ -1321,9 +1335,9 @@ pub extern "cdecl" fn is_likely_desynced() -> bool {
 unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     let (s, flags, heap) = unsafe {
         (
-            *(((*a).esp as usize + 2 * 4) as *mut usize),
-            *(((*a).esp as usize + 1 * 4) as *mut u32),
-            *(((*a).esp as usize + 0 * 4) as *mut isize),
+            *ptr_wrap_mut(((*a).esp as usize + 2 * 4) as *mut usize),
+            *ptr_wrap_mut(((*a).esp as usize + 1 * 4) as *mut u32),
+            *ptr_wrap_mut(((*a).esp as usize + 0 * 4) as *mut isize),
         )
     };
 
@@ -1439,7 +1453,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         }
     } else if type1 == 0x6c {
         let buf = [0x6d, 0x61];
-        let sock = *(((*a).edi + 0x28) as *const u32);
+        let sock = *ptr_wrap(((*a).edi + 0x28) as *const u32);
         let to = (*a).esp + 0x44;
 
         windows::Win32::Networking::WinSock::sendto(
@@ -1628,8 +1642,8 @@ unsafe fn read_current_input() -> [bool; 10] {
         let controler = get_controller(0x8a0198, controller_id as u32);
 
         if controler != 0 {
-            let axis1 = *(controler as *const i32);
-            let axis2 = *((controler + 4) as *const i32);
+            let axis1 = *ptr_wrap(controler as *const i32);
+            let axis2 = *ptr_wrap((controler + 4) as *const i32);
 
             input[2] = axis1 < -500;
             input[3] = axis1 > 500;
@@ -1638,10 +1652,10 @@ unsafe fn read_current_input() -> [bool; 10] {
             input[1] = axis2 > 500;
 
             for a in 0..6 {
-                let key = *((local_input_manager + 0x18 + a * 0x4) as *const i32);
+                let key = *ptr_wrap((local_input_manager + 0x18 + a * 0x4) as *const i32);
 
                 if key > -1 {
-                    input[a + 4] = *((key as u32 + 0x30 + controler) as *const u8) != 0;
+                    input[a + 4] = *ptr_wrap((key as u32 + 0x30 + controler) as *const u8) != 0;
                 }
             }
         }
@@ -1764,7 +1778,7 @@ unsafe fn handle_online(
     state_sub_count: &mut u32,
 ) {
     if framecount == 0 && !BATTLE_STARTED {
-        let round = *((*(0x8986a0 as *const usize) + 0x6c0) as *const u8);
+        let round = *ptr_wrap((*(0x8986a0 as *const usize) + 0x6c0) as *const u8);
 
         BATTLE_STARTED = true;
         SOUND_MANAGER = Some(RollbackSoundManager::new());
@@ -1865,7 +1879,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         let m = (w + 4 * 0x22) as *mut u32; //battle phase
 
         battle_state = &mut *m;
-        state_sub_count = &mut *((w + 4) as *mut u32);
+        state_sub_count = &mut *ptr_wrap_mut((w + 4) as *mut u32);
     }
     let gametype_main = *(0x898688 as *const usize);
     let is_netplay = *(0x8986a0 as *const usize) != 0;

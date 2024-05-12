@@ -26,6 +26,18 @@ pub struct NetworkPacket {
     sync: Option<i32>,
 }
 
+#[inline]
+fn ptr_wrap<T>(src: *const T) -> *const T {
+    assert!(src.is_aligned());
+    return src;
+}
+
+#[inline]
+fn ptr_wrap_mut<T>(src: *mut T) -> *mut  T {
+    assert!(src.is_aligned());
+    return src;
+}
+
 impl NetworkPacket {
     fn encode(&self) -> Box<[u8]> {
         let mut buf = [0; 400];
@@ -168,13 +180,13 @@ impl Netcoder {
 
             //host only
             let delay_display = (netmanager + 0x80) as *mut u8;
-            *delay_display = self.delay as u8;
+            *ptr_wrap_mut(delay_display) = self.delay as u8;
 
             //client only
             let delay_display = (netmanager + 0x81) as *mut u8;
-            *delay_display = self.delay as u8;
+            *ptr_wrap_mut(delay_display) = self.delay as u8;
 
-            is_p1 = netmanager != 0 && *(netmanager as *const usize) == 0x858cac;
+            is_p1 = netmanager != 0 && *ptr_wrap(netmanager as *const usize) == 0x858cac;
         }
 
         //because it looks like soku locks the netcode untill the start of a new frame, we sometimes reach this point before the netcode has finished processing it's packet, for that reason:
@@ -552,8 +564,9 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
     let socket = netmanager + 0x3e4;
 
     let to;
-    if *(netmanager as *const usize) == 0x858cac {
+    if *ptr_wrap(netmanager as *const usize) == 0x858cac {
         let it = (netmanager + 0x4c8) as *const usize;
+        assert!(it.is_aligned());
         data[1] = 1;
 
         if *it == 0 {
@@ -569,7 +582,7 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, 0x10);
+    let rse = sendto(*ptr_wrap(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets
@@ -589,6 +602,7 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
     let to;
     if *(netmanager as *const usize) == 0x858cac {
         let it = (netmanager + 0x4c8) as *const usize;
+        assert!(it.is_aligned());
         //data[1] = 1;
 
         if *it == 0 {
@@ -604,7 +618,7 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*(socket as *const SOCKET), &data, 0, to, 0x10);
+    let rse = sendto(*ptr_wrap(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets
