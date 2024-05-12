@@ -77,7 +77,7 @@ pub enum HookType {
 }
 
 /// The common registers.
-#[repr(C)]
+#[repr(C, packed(1))]
 #[derive(Debug)]
 pub struct Registers {
     /// The flags register.
