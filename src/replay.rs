@@ -31,9 +31,9 @@ impl RePlayRePlay {
 
     fn read_input(&mut self) {
         let map = if self.is_p2 {
-            &mut self.p1_inputs
-        } else {
             &mut self.p2_inputs
+        } else {
+            &mut self.p1_inputs
         };
 
         unsafe { map.insert(*SOKU_FRAMECOUNT, read_current_input()) };
@@ -42,9 +42,15 @@ impl RePlayRePlay {
     fn apply_input(&self) {
         unsafe {
             let fc = *SOKU_FRAMECOUNT;
-            REAL_INPUT2 = self.p1_inputs.get(&fc).copied();
+            REAL_INPUT = if self.p1_inputs.get(&fc).is_none()
+                && REPLAY_KO_FRAMECOUNT == Some(*SOKU_FRAMECOUNT)
+            {
+                Some([false; 10])
+            } else {
+                self.p1_inputs.get(&fc).copied()
+            };
 
-            REAL_INPUT = self.p2_inputs.get(&fc).copied();
+            REAL_INPUT2 = self.p2_inputs.get(&fc).copied();
         }
     }
 }
@@ -59,6 +65,8 @@ static mut DISABLE_PAUSE: bool = false;
 
 static IS_REWINDING: AtomicU8 = AtomicU8::new(0);
 static mut REWIND_PRESSED_LAST_FRAME: bool = false;
+
+static mut REPLAY_KO_FRAMECOUNT: Option<usize> = None;
 
 pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) {
     //let pinput = 0x89a248;
@@ -91,6 +99,12 @@ pub unsafe extern "cdecl" fn is_replay_over(
     let ori_fun: unsafe extern "fastcall" fn(u32) -> bool =
         unsafe { std::mem::transmute(0x00480860) };
     (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none()) as u32;
+    // A workaround for removing the single (p1 only) extra input at the end of replays with KO
+    // Check whether the deque saving inputs has only one element (size == 1):
+    if *ptr_wrap!((*(0x0089881c as *const *const u32)).offset(0x4c / 4)) == 1 {
+        // When the replay is over at this frame because of KO
+        REPLAY_KO_FRAMECOUNT = Some(*SOKU_FRAMECOUNT);
+    }
     return 0x00482689 + 5;
 }
 
@@ -186,8 +200,11 @@ pub unsafe fn handle_replay(
     cur_speed: &mut u32,
     cur_speed_iter: &mut u32,
     weird_counter: &mut u32,
-    scheme: &[u8;4]
+    scheme: &[u8; 4],
 ) {
+    if framecount == 0 {
+        REPLAY_KO_FRAMECOUNT = None;
+    }
     if let Some(x) = FRAMES.lock().unwrap().last_mut() {
         //TODO
         while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
