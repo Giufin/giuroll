@@ -8,8 +8,8 @@ use std::{
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
 use crate::{
-    input_to_accum, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED, SOKU_FRAMECOUNT,
-    TARGET_OFFSET,
+    input_to_accum, ptr_wrap, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED,
+    SOKU_FRAMECOUNT, TARGET_OFFSET,
 };
 
 #[derive(Clone, Debug)]
@@ -24,18 +24,6 @@ pub struct NetworkPacket {
     //confirms: Vec<bool>,
     last_confirm: usize,
     sync: Option<i32>,
-}
-
-#[inline]
-fn ptr_wrap<T>(src: *const T) -> *const T {
-    assert!(src.is_aligned());
-    return src;
-}
-
-#[inline]
-fn ptr_wrap_mut<T>(src: *mut T) -> *mut  T {
-    assert!(src.is_aligned());
-    return src;
 }
 
 impl NetworkPacket {
@@ -180,13 +168,13 @@ impl Netcoder {
 
             //host only
             let delay_display = (netmanager + 0x80) as *mut u8;
-            *ptr_wrap_mut(delay_display) = self.delay as u8;
+            *ptr_wrap!(delay_display) = self.delay as u8;
 
             //client only
             let delay_display = (netmanager + 0x81) as *mut u8;
-            *ptr_wrap_mut(delay_display) = self.delay as u8;
+            *ptr_wrap!(delay_display) = self.delay as u8;
 
-            is_p1 = netmanager != 0 && *ptr_wrap(netmanager as *const usize) == 0x858cac;
+            is_p1 = netmanager != 0 && *ptr_wrap!(netmanager as *const usize) == 0x858cac;
         }
 
         //because it looks like soku locks the netcode untill the start of a new frame, we sometimes reach this point before the netcode has finished processing it's packet, for that reason:
@@ -314,7 +302,7 @@ impl Netcoder {
                     .get(&(packet.id.saturating_sub(20)))
                     .cloned()
                     .unwrap_or(0);
-                if  weather_remote != weather_local {
+                if weather_remote != weather_local {
                     //#[cfg(feature = "allocconsole")]
                     //println!("desync");
                     unsafe {
@@ -564,9 +552,8 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
     let socket = netmanager + 0x3e4;
 
     let to;
-    if *ptr_wrap(netmanager as *const usize) == 0x858cac {
+    if *ptr_wrap!(netmanager as *const usize) == 0x858cac {
         let it = (netmanager + 0x4c8) as *const usize;
-        assert!(it.is_aligned());
         data[1] = 1;
 
         if *it == 0 {
@@ -582,7 +569,7 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*ptr_wrap(socket as *const SOCKET), &data, 0, to, 0x10);
+    let rse = sendto(*ptr_wrap!(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets
@@ -602,7 +589,6 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
     let to;
     if *(netmanager as *const usize) == 0x858cac {
         let it = (netmanager + 0x4c8) as *const usize;
-        assert!(it.is_aligned());
         //data[1] = 1;
 
         if *it == 0 {
@@ -618,7 +604,7 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
         to = (netmanager + 0x47c) as *const SOCKADDR
     }
 
-    let rse = sendto(*ptr_wrap(socket as *const SOCKET), &data, 0, to, 0x10);
+    let rse = sendto(*ptr_wrap!(socket as *const SOCKET), &data, 0, to, 0x10);
 
     if rse == -1 {
         //to do, change error handling for sockets

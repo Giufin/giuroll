@@ -9,25 +9,12 @@ use std::{
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
-    set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
-    SOUND_MANAGER,
+    ptr_wrap, set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER
 };
 
 type RInput = [bool; 10];
 
 pub static mut CHARSIZEDATA: Vec<(usize, usize)> = vec![];
-
-#[inline]
-fn ptr_wrap<T>(src: *const T) -> *const T {
-    assert!(src.is_aligned());
-    return src;
-}
-
-#[inline]
-fn ptr_wrap_mut<T>(src: *mut T) -> *mut  T {
-    assert!(src.is_aligned());
-    return src;
-}
 
 #[no_mangle]
 pub unsafe extern "cdecl" fn set_char_data_size(s: usize) {
@@ -169,7 +156,7 @@ impl Rollbacker {
     fn apply_input(input: RInput, opponent_input: RInput) {
         let is_p1 = unsafe {
             let netmanager = *(0x8986a0 as *const usize);
-            *ptr_wrap(netmanager as *const usize) == 0x858cac
+            *ptr_wrap!(netmanager as *const usize) == 0x858cac
         };
 
         if is_p1 {
@@ -255,7 +242,7 @@ impl Rollbacker {
             //    println!("here");
             //}
 
-            let current = unsafe {*SOKU_FRAMECOUNT};
+            let current = unsafe { *SOKU_FRAMECOUNT };
 
             let si = self.self_inputs[current];
             let ei = self.enemy_inputs.get(current);
@@ -483,7 +470,7 @@ pub unsafe fn dump_frame() -> Frame {
             m.push(read_addr(read_from, v1 * 4));
         }
         for a in 0..v3 {
-            let addr = *ptr_wrap((read_from + ((a + v2) % v1) * 4) as *const usize);
+            let addr = *ptr_wrap!((read_from + ((a + v2) % v1) * 4) as *const usize);
 
             m.push(read_addr(addr, size));
         }
@@ -709,7 +696,7 @@ pub unsafe fn dump_frame() -> Frame {
             }
         };
 
-        let old = *ptr_wrap((p + 0xc + offset * 4) as *const usize);
+        let old = *ptr_wrap!((p + 0xc + offset * 4) as *const usize);
         let char = old + 0x34c;
         let char = *(char as *const u8);
 
@@ -896,8 +883,6 @@ impl ReadAddr {
         if self.pos == 0 || self.content.len() == 0 {
             return;
         }
-
-        assert!((self.pos as *mut u8).is_aligned());
 
         let slice =
             unsafe { std::slice::from_raw_parts_mut(self.pos as *mut u8, self.content.len()) };
@@ -1119,7 +1104,6 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
     }
 
     let ptr = pos as *const u8;
-    assert!(ptr.is_aligned());
     ReadAddr {
         pos: pos,
         content: unsafe { std::slice::from_raw_parts(ptr, size) }.into(),
@@ -1128,7 +1112,6 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
 #[must_use]
 fn read_vec(pos: usize) -> VecAddr {
     let ptr = pos as *const u8;
-    assert!(ptr.is_aligned());
     let content = unsafe { std::slice::from_raw_parts(ptr, 12) };
 
     VecAddr {
