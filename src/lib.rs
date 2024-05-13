@@ -531,10 +531,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //let sw = REQUESTED_THREAD_ID.swap(0, Relaxed);
 
         (*a).ecx = 0x89f9f8;
-        let soundid = (*a).eax as usize;
         // Soku2 unaligned:
         // (*a).eax = *ptr_wrap!(((*a).esp + 4) as *const u32);
         (*a).eax = (((*a).esp + 4) as *const u32).read_unaligned();
+        let soundid = (*a).eax as usize;
 
         if !BATTLE_STARTED || soundid == 0 {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
