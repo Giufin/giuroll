@@ -918,7 +918,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 return;
             }
         };
-        if !IS_FIRST_READ_INPUTS {
+        if IS_FIRST_READ_INPUTS {
             let gametype_main = *(0x898688 as *const usize);
             let is_netplay = *(0x8986a0 as *const usize) != 0;
             if (gametype_main, is_netplay) == (2, false) {
