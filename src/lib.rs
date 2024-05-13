@@ -532,14 +532,17 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
         (*a).ecx = 0x89f9f8;
         let soundid = (*a).eax as usize;
-        (*a).eax = *ptr_wrap!(((*a).esp + 4) as *const u32);
+        // Soku2 unaligned:
+        // (*a).eax = *ptr_wrap!(((*a).esp + 4) as *const u32);
+        (*a).eax = (((*a).esp + 4) as *const u32).read_unaligned();
 
         if !BATTLE_STARTED || soundid == 0 {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
         }
 
-        if let Some(manager) = SOUND_MANAGER.as_mut() && !FORCE_SOUND_SKIP{
-
+        if let Some(manager) = SOUND_MANAGER.as_mut()
+            && !FORCE_SOUND_SKIP
+        {
             //println!(
             //    "trying to play sound {} at frame {} with rollback {}",
             //    soundid,
@@ -591,7 +594,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             //replicate the usual logic
 
-            if ((*ptr_wrap!(((*a).esp + 8) as *const usize)) & 1) == 0 {
+            // Soku2 unaligned:
+            //if ((*ptr_wrap!(((*a).esp + 8) as *const usize)) & 1) == 0 {
+            if ((((*a).esp + 8) as *const usize).read_unaligned() & 1) == 0 {
                 0x401d8c
             } else {
                 0x401d81
@@ -766,7 +771,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             /*
             0042db1d 8b 5c 24 1c     MOV        EBX,dword ptr [ESP + local_10]
              */
-            (*a).ebx = *ptr_wrap!(((*a).esp + 0x1c) as *const u32);
+            // probably Soku2 unaligned
+            // (*a).ebx = *ptr_wrap!(((*a).esp + 0x1c) as *const u32);
+            (*a).ebx = (((*a).esp + 0x1c) as *const u32).read_unaligned();
             0x42db21
         }
     }
