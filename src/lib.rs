@@ -531,7 +531,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //let sw = REQUESTED_THREAD_ID.swap(0, Relaxed);
 
         (*a).ecx = 0x89f9f8;
-        // Soku2 unaligned:
+        // Soku2 unaligned (can be triggered with the b bullet of Flandre):
         // (*a).eax = *ptr_wrap!(((*a).esp + 4) as *const u32);
         (*a).eax = (((*a).esp + 4) as *const u32).read_unaligned();
         let soundid = (*a).eax as usize;
@@ -594,7 +594,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             //replicate the usual logic
 
-            // Soku2 unaligned:
+            // Soku2 unaligned (can be triggered with the b bullet of Flandre):
             //if ((*ptr_wrap!(((*a).esp + 8) as *const usize)) & 1) == 0 {
             if ((((*a).esp + 8) as *const usize).read_unaligned() & 1) == 0 {
                 0x401d8c
@@ -1307,9 +1307,10 @@ static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
 unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
     (*_a).eax = 1;
-    let s = ptr_wrap!(((*_a).esp as usize + 2 * 4) as *mut usize);
-    let flags = ptr_wrap!(((*_a).esp as usize + 1 * 4) as *mut usize);
-    let heap = ptr_wrap!(((*_a).esp as usize + 0 * 4) as *mut usize);
+    // Soku2 unaligned (*_a).esp (can be triggered with j2a and db of Momizi):
+    let s = ((*_a).esp as usize + 2 * 4) as *mut usize;
+    let flags = ((*_a).esp as usize + 1 * 4) as *mut usize;
+    let heap = ((*_a).esp as usize + 0 * 4) as *mut usize;
 
     //if let Some(x) = MEMORYMUTEX.lock().unwrap().remove(&*s) {
     //    if x != *SOKU_FRAMECOUNT {
@@ -1317,14 +1318,16 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
     //    }
     //}
 
+    let value_of_heap = heap.read_unaligned();
+
     //if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
     if
     /* !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) || */
-    *(0x89b404 as *const usize) != *heap
+    *(0x89b404 as *const usize) != value_of_heap
         || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
         || *SOKU_FRAMECOUNT == 0
     {
-        HeapFree((*heap) as isize, *flags as u32, *s as *const c_void);
+        HeapFree(value_of_heap as isize, flags.read_unaligned() as u32, s.read_unaligned() as *const c_void);
         return;
     }
 
