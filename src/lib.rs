@@ -1363,7 +1363,11 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
         || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
         || *SOKU_FRAMECOUNT == 0
     {
-        HeapFree(value_of_heap as isize, flags.read_unaligned() as u32, s.read_unaligned() as *const c_void);
+        HeapFree(
+            value_of_heap as isize,
+            flags.read_unaligned() as u32,
+            s.read_unaligned() as *const c_void,
+        );
         return;
     }
 
