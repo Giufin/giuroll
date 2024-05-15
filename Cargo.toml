@@ -3,8 +3,9 @@ cargo-features = ["profile-rustflags"]
 name = "giuroll"
 authors = ["Giufin"]
 license = "MIT"
-version = "0.5.1"
+version = "0.6.14"
 edition = "2021"
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
@@ -39,3 +40,9 @@ log = { version = "0.4.17", optional = true }
 [profile.release]
 strip = true
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[package.metadata.winres]
+OriginalFilename = "giuroll.dll"
+
+[build-dependencies]
+winres = "0.1"
