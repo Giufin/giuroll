@@ -37,10 +37,12 @@ use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
         Foundation::{HMODULE, HWND, TRUE},
-        Networking::WinSock::closesocket,
+        Networking::WinSock::{closesocket, SOCKADDR, SOCKET},
         System::{
             Console::AllocConsole,
-            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS, PAGE_READWRITE},
+            Memory::{
+                VirtualProtect, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
+            },
         },
     },
 };
@@ -229,6 +231,9 @@ static mut IS_FIRST_READ_INPUTS: bool = true;
 
 static mut ORI_BATTLE_WATCH_ON_RENDER: Option<unsafe extern "fastcall" fn(*mut c_void) -> u32> =
     None;
+static mut ORI_RECVFROM: Option<
+    unsafe extern "stdcall" fn(SOCKET, *mut u8, i32, i32, *mut SOCKADDR, *mut i32) -> u32,
+> = None;
 
 static mut OUTER_COLOR: D3DCOLOR = 0;
 static mut INSIDE_COLOR: D3DCOLOR = 0;
@@ -242,6 +247,8 @@ static mut INSIDE_HALF_HEIGHT: i32 = 7;
 static mut INSIDE_HALF_WIDTH: i32 = 58;
 static mut OUTER_HALF_HEIGHT: i32 = 9;
 static mut OUTER_HALF_WIDTH: i32 = 60;
+
+static mut FRAME_ONE_FREEZE_MITIGATION: bool = false;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -468,6 +475,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         INSIDE_HALF_WIDTH = inside_half_width as i32;
         OUTER_HALF_HEIGHT = outer_half_height as i32;
         OUTER_HALF_WIDTH = outer_half_width as i32;
+        FRAME_ONE_FREEZE_MITIGATION = frame_one_freeze_mitigation;
     }
 
     unsafe {
@@ -617,6 +625,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     unsafe extern "cdecl" fn on_exit(_: *mut ilhook::x86::Registers, _: usize) {
         println!("on exit");
         HAS_LOADED = false;
+        AFTER_GAME_REQUEST_FROM_P1 = false;
 
         GIRLS_ARE_TALKING = false;
         LAST_LOAD_ACK = None;
@@ -1156,6 +1165,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             for i in 0..buf.len() {
                 m[i] = buf[i];
             }
+            println!("get game request!");
             LAST_GAME_REQUEST = Some(m);
         }
 
@@ -1195,6 +1205,32 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let new =
             unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
         std::mem::forget(new);
+
+        let p_call_inst = 0x0041dae5 as *mut u8;
+        let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+        unsafe {
+            let p_call_offset = p_call_inst.offset(1) as *mut u32;
+            ORI_RECVFROM = Some(std::mem::transmute(
+                p_call_inst as u32 + 5 + p_call_offset.read_unaligned(),
+            ));
+            assert_eq!(
+                VirtualProtect(
+                    p_call_offset as *const c_void,
+                    4,
+                    PAGE_EXECUTE_READWRITE,
+                    std::ptr::addr_of_mut!(old_prot_ptr),
+                ),
+                TRUE,
+            );
+            p_call_offset
+                .write_unaligned(recvfrom_with_fake_packet as u32 - (p_call_inst as u32 + 5));
+            VirtualProtect(
+                p_call_offset as *const c_void,
+                4,
+                old_prot_ptr,
+                std::ptr::addr_of_mut!(old_prot_ptr),
+            );
+        }
     }
 
     // disable x in replay 0x4826b5
@@ -1429,6 +1465,7 @@ use crate::{
 
 static LAST_STATE: AtomicU8 = AtomicU8::new(0x6b);
 static mut HAS_LOADED: bool = false;
+static mut AFTER_GAME_REQUEST_FROM_P1: bool = false;
 
 pub fn is_p1() -> bool {
     let is_p1 = unsafe {
@@ -1436,6 +1473,44 @@ pub fn is_p1() -> bool {
         *(netmanager as *const usize) == 0x858cac
     };
     is_p1
+}
+
+unsafe extern "stdcall" fn recvfrom_with_fake_packet(
+    s: SOCKET,
+    buf: *mut u8,
+    len: i32,
+    flags: i32,
+    from: *mut SOCKADDR,
+    fromlen: *mut i32,
+) -> u32 {
+    if let Some(ori_recvfrom) = ORI_RECVFROM {
+        if AFTER_GAME_REQUEST_FROM_P1 {
+            AFTER_GAME_REQUEST_FROM_P1 = false;
+            let netmanager = *(0x8986a0 as *const usize);
+            let to;
+            if *(netmanager as *const usize) == 0x858cac {
+                let it = (netmanager + 0x4c8) as *const usize;
+                if *it == 0 {
+                    panic!();
+                }
+                to = *(it as *const *const SOCKADDR);
+            } else {
+                if *(netmanager as *const usize) != 0x858d14 {
+                    panic!();
+                }
+                to = (netmanager + 0x47c) as *const SOCKADDR
+            }
+
+            *from = *to;
+            *fromlen = 0x10;
+            *buf = 0xd;
+            *buf.offset(1) = 0x5;
+            println!("Send a simulated LAST_MATCH_ACK packet to myself to get my GAME_REQUEST.");
+            return 2;
+        }
+        return ori_recvfrom(s, buf, len, flags, from, fromlen);
+    }
+    panic!();
 }
 
 unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usize) {
@@ -1564,12 +1639,37 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     if type1 == 14 || type1 == 13 {
         if type2 == 4 {
+            if FRAME_ONE_FREEZE_MITIGATION {
+                if HAS_LOADED {
+                    println!("Receive redundance GAME_REQUEST. Ignore it.");
+                    slic[0] = 0;
+                } else if type1 == 13 {
+                    println!("Receive GAME_REQUEST.");
+                    if *(0x008A0044 as *const u32) == 8 || *(0x008A0044 as *const u32) == 9 {
+                        if !is_p1() {
+                            AFTER_GAME_REQUEST_FROM_P1 = true;
+                            println!("It is from p1 to p2. A fake packet will be sent.");
+                        } else {
+                            println!("It is from p2 to p1. Nothing extra needs to be done.");
+                        }
+                    } else {
+                        println!(
+                            "WHILE the scene isn't SELECTSV or SELECTCL. It is {} instead. How can it happen?",
+                            *(0x008A0044 as *const u32)
+                        )
+                    }
+                }
+            }
             HAS_LOADED = true;
             //println!("has loaded !");
         }
 
-        if type2 == 8 {
+        if type2 == 5
+            && (*(0x008A0044 as *const u32) == 10 || *(0x008A0044 as *const u32) == 11)
+            && !is_p1()
+        {
             if let Some(gr) = LAST_GAME_REQUEST {
+                println!("the opponent is requesting GAME_REQUEST packet. reply with LAST_GAME_REQUEST.");
                 send_packet_untagged(Box::new(gr));
             }
         }
