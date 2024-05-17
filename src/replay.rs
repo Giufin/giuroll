@@ -1,5 +1,5 @@
 use crate::{
-    pause, read_key_better, resume,
+    pause, read_key_better, println, resume,
     rollback::{dump_frame, Frame},
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
 };

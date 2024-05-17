@@ -75,6 +75,19 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
 
 use winapi::um::libloaderapi::GetModuleFileNameW;
 
+static mut ENABLE_PRINTLN: bool = false;
+
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use crate::ENABLE_PRINTLN;
+        #[allow(unused_unsafe)]
+        if unsafe { ENABLE_PRINTLN } {
+            std::println!($($arg)*);
+        }
+    }};
+}
+
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 
 // calling convention here was changed from cdecl to C because of the requirements of the new library. Thankfully they appear to be aliases in the current ABI
@@ -269,6 +282,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
+    let enable_println = read_ini_bool(
+        &conf,
+        "Misc",
+        "enable_println",
+        cfg!(feature = "allocconsole") || ISDEBUG,
+    );
 
     //soku2 compatibility. Mods should change character size data themselves using exported functions. This is a temporary solution until soku2 team can implement that functionality.
     unsafe {
@@ -336,6 +355,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         DEFAULT_DELAY_VALUE = default_delay as usize;
         AUTODELAY_ENABLED = autodelay_enabled;
         AUTODELAY_ROLLBACK = autodelay_rollback as i8;
+        ENABLE_PRINTLN = enable_println;
     }
 
     unsafe {

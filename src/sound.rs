@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{force_sound_skip, SOKU_FRAMECOUNT};
+use crate::{force_sound_skip, println, SOKU_FRAMECOUNT};
 
 pub struct RollbackSoundManager {
     sounds_that_did_happen: HashMap<usize, Vec<usize>>,
