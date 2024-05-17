@@ -77,6 +77,28 @@ use winapi::um::libloaderapi::GetModuleFileNameW;
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 
+unsafe fn tamper_memory<T>(dst: *mut T, src: T) -> T {
+    let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+    assert_eq!(
+        VirtualProtect(
+            dst as *const c_void,
+            std::mem::size_of::<T>(),
+            PAGE_READWRITE,
+            std::ptr::addr_of_mut!(old_prot_ptr),
+        ),
+        TRUE,
+    );
+    let ori = dst.read_unaligned();
+    dst.write_unaligned(src);
+    VirtualProtect(
+        dst as *const c_void,
+        std::mem::size_of::<T>(),
+        old_prot_ptr,
+        std::ptr::addr_of_mut!(old_prot_ptr),
+    );
+    return ori;
+}
+
 // calling convention here was changed from cdecl to C because of the requirements of the new library. Thankfully they appear to be aliases in the current ABI
 #[no_mangle]
 pub unsafe extern "C" fn exeinit() {
@@ -671,20 +693,15 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         unsafe { ilhook::x86::Hooker::new(0x482960, HookType::JmpBack(ongirlstalk), 0).hook(5) };
     std::mem::forget(new);
 
-    for a in [0x821730, 0x821759, 0x82251e, 0x82f09e, 0x82f18c] {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(a, HookType::JmpToAddr(a + 6, 0xc, heap_free_override), 0)
-                .hook(6)
-        };
-        std::mem::forget(new);
-    }
-
-    for b in [0x821704, 0x823397, 0x82ed84, 0x82f15b, 0x8230e6] {
-        let new = unsafe {
-            ilhook::x86::Hooker::new(b, HookType::JmpToAddr(b + 6, 0xc, heap_alloc_override), 0)
-                .hook(6)
-        };
-        std::mem::forget(new);
+    unsafe {
+        tamper_memory(
+            0x00857170 as *mut unsafe extern "stdcall" fn(_, _, _) -> _,
+            heap_free_override,
+        );
+        tamper_memory(
+            0x00857174 as *mut unsafe extern "stdcall" fn(_, _, _) -> _,
+            heap_alloc_override,
+        );
     }
 
     let s = 0x822499; //0x822465;
@@ -1119,11 +1136,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 
 static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
-unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
-    (*_a).eax = 1;
-    let s = ((*_a).esp as usize + 2 * 4) as *mut usize;
-    let flags = ((*_a).esp as usize + 1 * 4) as *mut usize;
-    let heap = ((*_a).esp as usize + 0 * 4) as *mut usize;
+unsafe extern "stdcall" fn heap_free_override(heap: isize, flags: u32, s: *const c_void) -> i32 {
 
     //if let Some(x) = MEMORYMUTEX.lock().unwrap().remove(&*s) {
     //    if x != *SOKU_FRAMECOUNT {
@@ -1134,12 +1147,11 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
     //if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed) {
     if
     /* !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) || */
-    *(0x89b404 as *const usize) != *heap
+    *(0x89b404 as *const isize) != heap
         || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
         || *SOKU_FRAMECOUNT == 0
     {
-        HeapFree((*heap) as isize, *flags as u32, *s as *const c_void);
-        return;
+        return HeapFree(heap as isize, flags as u32, s);
     }
 
     unsafe {
@@ -1147,9 +1159,11 @@ unsafe extern "cdecl" fn heap_free_override(_a: *mut ilhook::x86::Registers, _b:
             .as_ref()
             .unwrap()
             .clone()
-            .send(*s)
+            .send(s as usize)
             .unwrap()
     };
+
+    return 1;
 
     //} else {
     //    let heap = unsafe { *(0x89b404 as *const isize) };
@@ -1194,16 +1208,8 @@ pub extern "cdecl" fn is_likely_desynced() -> bool {
     unsafe { LIKELY_DESYNCED }
 }
 
-unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
-    let (s, flags, heap) = unsafe {
-        (
-            *(((*a).esp as usize + 2 * 4) as *mut usize),
-            *(((*a).esp as usize + 1 * 4) as *mut u32),
-            *(((*a).esp as usize + 0 * 4) as *mut isize),
-        )
-    };
-
-    (*a).eax = HeapAlloc(heap, flags, s) as u32;
+unsafe extern "stdcall" fn heap_alloc_override(heap: isize, flags: u32, s: usize) -> *mut c_void {
+    let ret = HeapAlloc(heap, flags, s);
 
     if *(0x89b404 as *const usize) != heap as usize
         /*|| !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)*/
@@ -1212,8 +1218,9 @@ unsafe extern "cdecl" fn heap_alloc_override(a: *mut ilhook::x86::Registers, _b:
     {
         //println!("wrong heap alloc");
     } else {
-        store_alloc((*a).eax as usize);
+        store_alloc(ret as usize);
     }
+    return ret;
 }
 
 unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
