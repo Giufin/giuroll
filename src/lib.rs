@@ -32,11 +32,11 @@ use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
-        Foundation::{HMODULE, HWND},
+        Foundation::{HMODULE, HWND, TRUE},
         Networking::WinSock::closesocket,
         System::{
             Console::AllocConsole,
-            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS},
+            Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS, PAGE_READWRITE},
         },
     },
 };
