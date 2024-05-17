@@ -5,9 +5,10 @@ use winres::{VersionInfo, WindowsResource};
 extern crate winres;
 
 fn main() {
-    let mut res = winres::WindowsResource::new();
+    let mut res = WindowsResource::new();
     if cfg!(unix) {
         // from https://github.com/mxre/winres/blob/1807bec3552cd2f0d0544420584d6d78be5e3636/example/build.rs#L10
+        res.set_toolkit_path("/home/hagb/my_msvc/");
         // ar tool for mingw in toolkit path
         res.set_ar_path("/usr/i686-w64-mingw32/bin/ar");
         // windres tool
@@ -33,6 +34,7 @@ fn main() {
             << 16;
         version |= version_pre.parse().unwrap_or(0);
         res.set_version_info(VersionInfo::FILEVERSION, version);
+        res.set_version_info(VersionInfo::PRODUCTVERSION, version);
     } else {
         panic!();
     }
