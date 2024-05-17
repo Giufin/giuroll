@@ -1,6 +1,6 @@
 use crate::{
-    draw_num_x_center, get_num_length, pause, ptr_wrap, read_current_input, read_key_better,
-    resume,
+    draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
+    read_key_better, resume,
     rollback::{dump_frame, Frame},
     CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, INSIDE_COLOR, INSIDE_HALF_HEIGHT,
     INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,

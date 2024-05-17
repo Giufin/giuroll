@@ -79,6 +79,19 @@ pub fn set_up_fern() -> Result<(), fern::InitError> {
     Ok(())
 }
 
+static mut ENABLE_PRINTLN: bool = false;
+
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use crate::ENABLE_PRINTLN;
+        #[allow(unused_unsafe)]
+        if unsafe { ENABLE_PRINTLN } {
+            std::println!($($arg)*);
+        }
+    }};
+}
+
 use winapi::{
     shared::d3d9types::{D3DCOLOR, D3DCOLOR_ARGB},
     um::{
@@ -379,6 +392,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
+    let enable_println = read_ini_bool(
+        &conf,
+        "Misc",
+        "enable_println",
+        cfg!(feature = "allocconsole") || ISDEBUG,
+    );
     let outer_color: D3DCOLOR = read_ini_int_hex(
         &conf,
         "Takeover",
@@ -498,6 +517,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         OUTER_HALF_HEIGHT = outer_half_height as i32;
         OUTER_HALF_WIDTH = outer_half_width as i32;
         FRAME_ONE_FREEZE_MITIGATION = frame_one_freeze_mitigation;
+        ENABLE_PRINTLN = enable_println;
     }
 
     unsafe {
