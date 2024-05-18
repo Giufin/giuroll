@@ -3,7 +3,7 @@ cargo-features = ["profile-rustflags"]
 name = "giuroll"
 authors = ["Giufin"]
 license = "MIT"
-version = "0.6.13-5-takeover.1-frame1fix.1"
+version = "0.6.13-6-takeover.1-frame1fix.3"
 edition = "2021"
 build = "build.rs"
 
