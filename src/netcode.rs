@@ -36,7 +36,7 @@ impl NetworkPacket {
 
         buf[11] = self.inputs.len() as u8; //inputs, confirms are the same length
 
-        for a in 0..self.inputs.len() {
+        for a in (if self.id != 0 { 0 } else { 1 })..self.inputs.len() {
             buf[(12 + a * 2)..(14 + a * 2)].copy_from_slice(&self.inputs[a].to_le_bytes());
         }
 
@@ -58,7 +58,13 @@ impl NetworkPacket {
         let max_rollback = d[10];
         let inputsize = d[11];
         let inputs = (0..inputsize as usize)
-            .map(|x| u16::from_le_bytes(d[12 + x * 2..12 + (x + 1) * 2].try_into().unwrap()))
+            .map(|x| {
+                if id == 0 && x == 0 {
+                    0
+                } else {
+                    u16::from_le_bytes(d[12 + x * 2..12 + (x + 1) * 2].try_into().unwrap())
+                }
+            })
             .collect();
         let lastend = 12 + inputsize as usize * 2;
         let last_confirm = usize::from_le_bytes(d[lastend..lastend + 4].try_into().unwrap());
