@@ -1005,7 +1005,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let ptr = ((*a).edi + 0x1c) as *const u8;
         let buf = std::slice::from_raw_parts(ptr, 400);
 
-        if (buf[0] == 13 || buf[0] == 14) && buf[1] == 4 {
+        // Ensure we don't assign the GAME_REQUEST packet for spectators to LAST_GAME_REQUEST.
+        if buf[0] == if is_p1() { 13 } else { 14 } && buf[1] == 4 && LAST_GAME_REQUEST.is_none() {
             let mut m = [0; 400];
             for i in 0..buf.len() {
                 m[i] = buf[i];
@@ -1479,7 +1480,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
             && !is_p1()
         {
             if let Some(gr) = LAST_GAME_REQUEST {
-                println!("the opponent is requesting GAME_REQUEST packet. reply with LAST_GAME_REQUEST.");
+                println!("the opponent is requesting GAME_REQUEST packet. reply it with LAST_GAME_REQUEST.");
                 send_packet_untagged(Box::new(gr));
             }
         }
