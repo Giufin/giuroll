@@ -264,8 +264,6 @@ static mut LAST_MATCH_LOAD: Option<[u8; 400]> = None;
 
 static mut IS_FIRST_READ_INPUTS: bool = true;
 
-static mut ORI_BATTLE_WATCH_ON_RENDER: Option<unsafe extern "fastcall" fn(*mut c_void) -> u32> =
-    None;
 static mut ORI_RECVFROM: Option<
     unsafe extern "stdcall" fn(SOCKET, *mut u8, i32, i32, *mut SOCKADDR, *mut i32) -> u32,
 > = None;
@@ -846,6 +844,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         if let Some(x) = NEXT_DRAW_ENEMY_DELAY {
             draw_num((20.0, 466.0), x);
         }
+        render_replay_progress_bar(0 as _);
     }
 
     let new =
@@ -1312,31 +1311,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
-    let cbattle_battle_vtbl_on_render: *mut unsafe extern "fastcall" fn(*mut c_void) -> u32 =
-        unsafe { std::mem::transmute(0x008574a8) };
-    let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
-    unsafe {
-        ORI_BATTLE_WATCH_ON_RENDER = Some(*cbattle_battle_vtbl_on_render);
-        println!("1: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
-        assert_eq!(
-            VirtualProtect(
-                cbattle_battle_vtbl_on_render as *const c_void,
-                4,
-                PAGE_READWRITE,
-                std::ptr::addr_of_mut!(old_prot_ptr),
-            ),
-            TRUE,
-        );
-        *cbattle_battle_vtbl_on_render = my_battle_watch_on_render;
-        println!("2: {:x}", *(cbattle_battle_vtbl_on_render as *mut u32));
-        VirtualProtect(
-            cbattle_battle_vtbl_on_render as *const c_void,
-            4,
-            old_prot_ptr,
-            std::ptr::addr_of_mut!(old_prot_ptr),
-        );
-    }
-
     Some(())
 }
 
@@ -1484,7 +1458,7 @@ use core::sync::atomic::AtomicU8;
 use crate::{
     netcode::{send_packet, send_packet_untagged},
     replay::{
-        apause, clean_replay_statics, handle_replay, is_replay_over, my_battle_watch_on_render,
+        apause, clean_replay_statics, handle_replay, is_replay_over, render_replay_progress_bar,
     },
     rollback::CHARSIZEDATA,
 };

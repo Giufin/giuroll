@@ -4,8 +4,8 @@ use crate::{
     rollback::{dump_frame, Frame},
     CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, INSIDE_COLOR, INSIDE_HALF_HEIGHT,
     INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,
-    ORI_BATTLE_WATCH_ON_RENDER, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR,
-    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
+    OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2,
+    SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::HashMap,
@@ -30,6 +30,7 @@ struct RePlayRePlay {
 
 impl RePlayRePlay {
     fn new(frame: usize, is_p1: bool) -> Self {
+        println!("new RePlayRePlay at {}", frame);
         Self {
             frame,
             p1_inputs: HashMap::new(),
@@ -39,6 +40,7 @@ impl RePlayRePlay {
     }
 
     fn read_input(&mut self) {
+        // println!("read {}", unsafe { *SOKU_FRAMECOUNT });
         let map = if self.is_p2 {
             &mut self.p2_inputs
         } else {
@@ -51,6 +53,13 @@ impl RePlayRePlay {
     fn apply_input(&self) {
         unsafe {
             let fc = *SOKU_FRAMECOUNT;
+            // println!(
+            //     "write {} {} {}",
+            //     *SOKU_FRAMECOUNT,
+            //     self.p1_inputs.get(&fc).is_some(),
+            //     self.p2_inputs.get(&fc).is_some()
+            // );
+
             REAL_INPUT = if self.p1_inputs.get(&fc).is_none()
                 && REPLAY_KO_FRAMECOUNT == Some(*SOKU_FRAMECOUNT)
             {
@@ -77,6 +86,8 @@ static mut REWIND_PRESSED_LAST_FRAME: bool = false;
 
 static mut REPLAY_KO_FRAMECOUNT: Option<usize> = None;
 
+static mut LAST_TARGET: Option<usize> = None;
+
 pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) {
     //let pinput = 0x89a248;
     //let input = read_addr(0x89a248, 0x58).usize_align();
@@ -101,20 +112,16 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
 
 static mut D3D9_DEVICE: *mut *mut IDirect3DDevice9 = 0x008A0E30 as *mut *mut IDirect3DDevice9;
 
-pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> u32 {
+pub unsafe fn render_replay_progress_bar(this: *mut c_void) {
     let gametype_main = *(0x898688 as *const u32);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
-    assert!(ORI_BATTLE_WATCH_ON_RENDER.is_some());
-    let ret = match ORI_BATTLE_WATCH_ON_RENDER {
-        None => 0,
-        Some(ori_fun) => ori_fun(this),
-    };
+    // assert!(ORI_BATTLE_WATCH_ON_RENDER.is_some());
     if is_netplay || gametype_main != 2 || RE_PLAY.is_none() {
-        return ret;
+        return;
     }
 
-    let crenderer_begin: unsafe extern "cdecl" fn() = std::mem::transmute(0x00401000);
-    let crenderer_end: unsafe extern "fastcall" fn(*const c_void) = std::mem::transmute(0x00401040);
+    // let crenderer_begin: unsafe extern "cdecl" fn() = std::mem::transmute(0x00401000);
+    // let crenderer_end: unsafe extern "fastcall" fn(*const c_void) = std::mem::transmute(0x00401040);
 
     let mut center_x = CENTER_X_P1;
     let mut center_y = CENTER_Y_P1;
@@ -125,7 +132,7 @@ pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> 
         center_y = CENTER_Y_P2;
     }
 
-    crenderer_begin();
+    // crenderer_begin();
 
     if RE_PLAY_PAUSE == 0
         && let Some(replay) = &RE_PLAY
@@ -176,9 +183,9 @@ pub unsafe extern "fastcall" fn my_battle_watch_on_render(this: *mut c_void) -> 
         );
     }
 
-    crenderer_end(0x896b4c as *const c_void);
+    // crenderer_end(0x896b4c as *const c_void);
 
-    return ret;
+    return;
 }
 
 pub unsafe extern "cdecl" fn is_replay_over(
@@ -295,7 +302,10 @@ pub unsafe fn handle_replay(
 ) {
     if framecount == 0 {
         REPLAY_KO_FRAMECOUNT = None;
+        LAST_TARGET = None;
     }
+    REAL_INPUT = None;
+    REAL_INPUT2 = None;
     if let Some(x) = FRAMES.lock().unwrap().last_mut() {
         //TODO
         while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
@@ -310,77 +320,103 @@ pub unsafe fn handle_replay(
 
     //let scheme = [0x02, 0x03, 0x04, 0x05];
     //let scheme = [0x10, 0x11, 0x12, 0x13];
-
     let mut override_target_frame = None;
-    let qdown = read_key_better(scheme[0]);
-    if qdown {
-        if let Some(rprp) = RE_PLAY.take() {
-            override_target_frame = Some(rprp.frame as u32 - 1);
-            DISABLE_PAUSE = false;
-            set_keys_availability_in_takeover(true);
-        }
+    // println!(
+    //     "{}: cur_speed_iter {}, cur_speed {}, pause {}",
+    //     framecount,
+    //     *cur_speed_iter,
+    //     *cur_speed,
+    //     PAUSESTATE.load(Relaxed)
+    // );
+
+    if *cur_speed_iter == 0
+        && let Some(t) = LAST_TARGET.take()
+        && let should_be = t + (PAUSESTATE.load(Relaxed) == 0) as usize
+        && should_be != framecount
+    {
+        println!("mistake frame {}, should be {}", framecount, should_be);
     }
 
-    let wdown = read_key_better(scheme[1]);
-    if wdown {
-        if let Some(x) = &mut RE_PLAY {
-            x.is_p2 = false;
-            override_target_frame = Some(x.frame as u32 - 1);
+    if *cur_speed_iter == 0 && framecount >= 2 {
+        let qdown = read_key_better(scheme[0]);
+        if qdown {
+            if let Some(rprp) = RE_PLAY.take() {
+                override_target_frame = Some(rprp.frame as u32 - 1);
+                DISABLE_PAUSE = false;
+                RE_PLAY_PAUSE = 1;
+                set_keys_availability_in_takeover(true);
+                // let mut frames = FRAMES.lock().unwrap();
+                // let least_modify_frame = rprp
+                //     .p1_inputs
+                //     .keys()
+                //     .chain(rprp.p2_inputs.keys())
+                //     .min()
+                //     .unwrap_or(&(rprp.frame - 1))
+                //     + 1;
+                // while let Some(x) = frames.last()
+                //     && x.number >= least_modify_frame
+                // {
+                //     frames.pop();
+                // }
+            }
+        }
+
+        let wdown = read_key_better(scheme[1]);
+        if wdown {
+            if let Some(x) = &mut RE_PLAY {
+                x.is_p2 = false;
+                override_target_frame = Some(x.frame as u32 - 1);
+                RE_PLAY_PAUSE = 40;
+            } else {
+                RE_PLAY = Some(RePlayRePlay::new(framecount + 1, false));
+            }
+        }
+
+        let edown = read_key_better(scheme[2]);
+        if edown {
+            if let Some(x) = &mut RE_PLAY {
+                x.is_p2 = true;
+                override_target_frame = Some(x.frame as u32 - 1);
+                RE_PLAY_PAUSE = 40;
+            } else {
+                RE_PLAY = Some(RePlayRePlay::new(framecount + 1, true));
+            }
+        }
+
+        if wdown || edown {
             RE_PLAY_PAUSE = 40;
-        } else {
-            RE_PLAY = Some(RePlayRePlay::new(framecount, false));
-        }
-    }
-
-    let edown = read_key_better(scheme[2]);
-    if edown {
-        if let Some(x) = &mut RE_PLAY {
-            x.is_p2 = true;
-            override_target_frame = Some(x.frame as u32 - 1);
             RE_PLAY_PAUSE = 40;
-        } else {
-            RE_PLAY = Some(RePlayRePlay::new(framecount, true));
+            DISABLE_PAUSE = true;
+            set_keys_availability_in_takeover(false);
+            load_keybinding();
         }
-    }
 
-    if wdown || edown {
-        RE_PLAY_PAUSE = 40;
-        RE_PLAY_PAUSE = 40;
-        DISABLE_PAUSE = true;
-        set_keys_availability_in_takeover(false);
-        load_keybinding();
-    }
-
-    let rdown = read_key_better(scheme[3]);
-    if rdown {
-        if let Some(rprp) = &RE_PLAY {
-            override_target_frame = Some(rprp.frame as u32 - 1);
-            RE_PLAY_PAUSE = 40;
+        let rdown = read_key_better(scheme[3]);
+        if rdown {
+            if let Some(rprp) = &RE_PLAY {
+                override_target_frame = Some(rprp.frame as u32 - 1);
+                RE_PLAY_PAUSE = 40;
+            }
         }
-    }
 
-    if let Some(rprp) = &mut RE_PLAY {
-        if rprp.frame + 1 < *SOKU_FRAMECOUNT {
-            *cur_speed = 1;
-
-            rprp.read_input();
-            rprp.apply_input()
+        if RE_PLAY_PAUSE == 1 {
+            RE_PLAY_PAUSE -= 1;
+            PAUSESTATE.store(0, Relaxed);
+        } else if RE_PLAY_PAUSE > 1 {
+            RE_PLAY_PAUSE -= 1;
+            PAUSESTATE.store(1, Relaxed);
         }
-    }
-
-    if RE_PLAY_PAUSE == 1 {
-        RE_PLAY_PAUSE -= 1;
-        PAUSESTATE.store(0, Relaxed);
-    } else if RE_PLAY_PAUSE > 1 {
-        RE_PLAY_PAUSE -= 1;
-        PAUSESTATE.store(1, Relaxed);
     }
 
     resume(battle_state);
-    if *cur_speed_iter == 0 && PAUSESTATE.load(Relaxed) != 0 && override_target_frame.is_none() {
-        if RE_PLAY.is_some() {
-            REWIND_PRESSED_LAST_FRAME = true
-        }
+    if RE_PLAY.is_some() || PAUSESTATE.load(Relaxed) == 0 {
+        REWIND_PRESSED_LAST_FRAME = false;
+    }
+    if *cur_speed_iter == 0
+        && PAUSESTATE.load(Relaxed) != 0
+        && override_target_frame.is_none()
+        && RE_PLAY.is_none()
+    {
         match (*cur_speed, REWIND_PRESSED_LAST_FRAME) {
             (16, false) => {
                 REWIND_PRESSED_LAST_FRAME = true;
@@ -388,7 +424,7 @@ pub unsafe fn handle_replay(
             }
             (8, false) => {
                 REWIND_PRESSED_LAST_FRAME = true;
-                override_target_frame = Some(framecount as u32 - 2);
+                override_target_frame = Some(framecount as u32 - 1);
             }
             _ => {
                 if *cur_speed == 1 {
@@ -399,7 +435,6 @@ pub unsafe fn handle_replay(
                 return;
             }
         }
-
         *cur_speed = 1;
     }
 
@@ -432,15 +467,27 @@ pub unsafe fn handle_replay(
         //"true" frame
 
         IS_REWINDING.store(0, Relaxed);
-        let qdown = read_key_better(0x10);
 
-        if (qdown && RE_PLAY.is_none()) || override_target_frame.is_some() {
+        'to_target_frame: {
             let target = if let Some(x) = override_target_frame {
-                x
+                if x < framecount as u32 {
+                    x
+                } else {
+                    *cur_speed_iter = 1;
+                    *cur_speed = 2 + x - framecount as u32;
+                    break 'to_target_frame;
+                }
             } else {
-                let target = (framecount).saturating_sub(*cur_speed as usize + 1);
-                target as u32
+                let qdown = read_key_better(0x10);
+                if qdown && RE_PLAY.is_none() {
+                    let target = (framecount).saturating_sub(*cur_speed as usize + 1);
+                    target as u32
+                } else {
+                    break 'to_target_frame;
+                }
             };
+
+            // println!("target {}", target);
 
             let mutex = FRAMES.lock().unwrap();
             let mut map = mutex;
@@ -449,6 +496,7 @@ pub unsafe fn handle_replay(
             loop {
                 let candidate = frames.pop();
                 if let Some(x) = candidate {
+                    // println!("pop {}", x.number);
                     if let Some(x) = last {
                         x.never_happened();
                     }
@@ -477,13 +525,19 @@ pub unsafe fn handle_replay(
                         //}
 
                         *cur_speed_iter = 1;
-                        *cur_speed = 1 + diff;
+                        *cur_speed = 2 + diff;
+                        LAST_TARGET = Some(target as _);
                         //                        let diff = 1;
 
                         if diff <= 0 && false {
                             pause(battle_state, weird_counter);
                             *cur_speed_iter = *cur_speed;
                             return;
+                        }
+
+                        if diff > 0 {
+                            println!("push {}", x.number);
+                            map.push(x);
                         }
 
                         break;
@@ -493,6 +547,7 @@ pub unsafe fn handle_replay(
                     }
                 } else {
                     //nothing can be done ?
+                    // println!("nothing popped");
 
                     if let Some(last) = last {
                         last.restore();
@@ -507,13 +562,42 @@ pub unsafe fn handle_replay(
         }
     }
 
+    if let Some(rprp) = &mut RE_PLAY {
+        if PAUSESTATE.load(Relaxed) == 0 && *cur_speed_iter + 1 >= *cur_speed
+        /*&& !(*cur_speed_iter == 0 && qdown != 0)*/
+        {
+            rprp.read_input();
+        }
+        rprp.apply_input();
+    }
+
+    if PAUSESTATE.load(Relaxed) != 0 {
+        if *cur_speed_iter + 1 >= *cur_speed {
+            pause(battle_state, weird_counter);
+        }
+        return;
+    }
+
     let framecount = *SOKU_FRAMECOUNT;
 
-    if framecount % 16 == 1 || IS_REWINDING.load(Relaxed) == 1 {
+    if framecount % 16 == 1
+        || IS_REWINDING.load(Relaxed) == 1
+        || match &RE_PLAY {
+            Some(rprp) => rprp.frame - 1 == framecount,
+            _ => false,
+        }
+    {
         let frame = dump_frame();
 
         let mut mutex = FRAMES.lock().unwrap();
 
+        // println!("push {}", frame.number);
         mutex.push(frame);
     }
+    // println!(
+    //     "{} {} {}",
+    //     cur_speed,
+    //     cur_speed_iter,
+    //     LAST_TARGET.unwrap_or(0)
+    // );
 }
