@@ -11,6 +11,7 @@ use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 use crate::{
     set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
     SOUND_MANAGER,
+    callbackArray, Callbacks
 };
 
 type RInput = [bool; 10];
@@ -842,12 +843,24 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(x);
     }
 
+    let mut extraStates: Vec<ExtraState> = Vec::new();
+
+    for cb in callbackArray.clone().into_iter() {
+        let i = (cb.saveState)();
+
+        extraStates.push(ExtraState {
+            cb: cb,
+            state: i
+        })
+    }
+
     Frame {
         number: *SOKU_FRAMECOUNT,
         adresses: m.into_boxed_slice(),
         fp: w,
         frees: vec![],
         allocs: vec![],
+        extraStates: extraStates,
         weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
             & 0xFF) as u8,
     }
@@ -1165,6 +1178,12 @@ fn get_ptr(from: &[u8], offset: usize) -> usize {
     usize::from_le_bytes(from[offset..offset + 4].try_into().unwrap())
 }
 
+#[derive(Debug, Clone)]
+struct ExtraState {
+    cb: Callbacks,
+    state: u32
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub number: usize,
@@ -1172,6 +1191,7 @@ pub struct Frame {
     pub fp: [u8; 108],
     pub frees: Vec<usize>,
     pub allocs: Vec<usize>,
+    pub extraStates: Vec<ExtraState>,
 
     pub weather_sync_check: u8,
 }
@@ -1195,6 +1215,9 @@ impl Frame {
         for a in allocs.difference(&frees) {
             //println!("never freed: {}", a);
         }
+        for a in self.extraStates.clone().into_iter() {
+            unsafe { (a.cb.freeState)(a.state); }
+        }
     }
 
     pub fn did_happen(self) {
@@ -1209,6 +1232,9 @@ impl Frame {
             if a != 0 {
                 unsafe { HeapFree(heap, 0, a as *const c_void) };
             }
+        }
+        for a in self.extraStates.clone().into_iter() {
+            unsafe { (a.cb.freeState)(a.state); }
         }
     }
 
@@ -1242,8 +1268,14 @@ impl Frame {
             )
         }
 
+        for a in self.extraStates.clone().into_iter() {
+           unsafe { (a.cb.loadStatePre)(self.number, a.state); }
+        }
         for a in self.adresses.clone().to_vec().into_iter() {
             a.restore();
+        }
+        for a in self.extraStates.into_iter() {
+            unsafe { (a.cb.loadStatePost)(a.state); }
         }
     }
 }

@@ -49,6 +49,18 @@ use windows::{
 
 //#[cfg(debug_assertions)]
 const ISDEBUG: bool = false;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Callbacks {
+    pub saveState: unsafe extern "C" fn() -> u32,
+    pub loadStatePre: unsafe extern "C" fn(usize, u32),
+    pub loadStatePost: unsafe extern "C" fn(u32),
+    pub freeState: unsafe extern "C" fn(u32)
+}
+
+static mut callbackArray: Vec<Callbacks> = Vec::new();
+
 //#[cfg(not(debug_assertions))]
 //const ISDEBUG: bool = false;
 #[cfg(feature = "logtofile")]
@@ -100,6 +112,16 @@ pub unsafe extern "C" fn better_exe_init() -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn getPriority() -> i32 {
+    1000
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
+    callbackArray.push(*cb);
+}
+
+#[no_mangle]
 pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
     let mut dat = [0u16; 1025];
     unsafe {
@@ -140,7 +162,7 @@ static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
 static mut TITLE: &'static [u16] = &[];
-const VER: &str = "0.6.14";
+const VER: &str = "0.6.14b";
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
 
