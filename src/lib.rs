@@ -392,8 +392,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
     let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
-    let freeze_mitigation =
-        read_ini_bool(&conf, "Netplay", " __freeze_mitigation__", false);
+    let freeze_mitigation = read_ini_bool(&conf, "Netplay", "freeze_mitigation__", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
     let enable_println = read_ini_bool(
