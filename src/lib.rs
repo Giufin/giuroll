@@ -284,7 +284,7 @@ static mut INSIDE_HALF_WIDTH: i32 = 58;
 static mut OUTER_HALF_HEIGHT: i32 = 9;
 static mut OUTER_HALF_WIDTH: i32 = 60;
 
-static mut FRAME_ONE_FREEZE_MITIGATION: bool = false;
+static mut FREEZE_MITIGATION: bool = false;
 static mut ENABLE_CHECK_MODE: bool = false;
 
 static mut DISABLE_SOUND: bool = false;
@@ -392,8 +392,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let network_menu = read_ini_bool(&conf, "Netplay", "enable_network_stats_by_default", false);
     let default_delay = read_ini_int_hex(&conf, "Netplay", "default_delay", 2).clamp(0, 9);
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
-    let frame_one_freeze_mitigation =
-        read_ini_bool(&conf, "Netplay", "frame_one_freeze_mitigation", false);
+    let freeze_mitigation =
+        read_ini_bool(&conf, "Netplay", " __freeze_mitigation__", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
     let enable_println = read_ini_bool(
@@ -521,7 +521,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         INSIDE_HALF_WIDTH = inside_half_width as i32;
         OUTER_HALF_HEIGHT = outer_half_height as i32;
         OUTER_HALF_WIDTH = outer_half_width as i32;
-        FRAME_ONE_FREEZE_MITIGATION = frame_one_freeze_mitigation;
+        FREEZE_MITIGATION = freeze_mitigation;
         ENABLE_PRINTLN = enable_println;
         ENABLE_CHECK_MODE = enable_check_mode;
     }
@@ -1257,7 +1257,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    if frame_one_freeze_mitigation {
+    if freeze_mitigation {
         let new =
             unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
         std::mem::forget(new);
@@ -1661,7 +1661,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if type1 == 14 || type1 == 13 {
-        if FRAME_ONE_FREEZE_MITIGATION {
+        if FREEZE_MITIGATION {
             if type2 == 4 {
                 if HAS_LOADED {
                     println!("Receive redundance GAME_REQUEST. Ignore it.");
