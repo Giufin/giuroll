@@ -486,7 +486,7 @@ impl Netcoder {
                     //println!("median: {median}");
                     let sum: i32 = av[3..TIME_SYNC_MEDIAN_INTERVAL - 3].iter().sum();
                     let average = sum / (TIME_SYNC_MEDIAN_INTERVAL as i32 - 6);
-                    println!("average: {average}");
+                    // println!("average: {average}");
 
                     self.last_median_sync = average;
                 }

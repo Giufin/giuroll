@@ -4,6 +4,7 @@ use std::{
     arch::asm,
     collections::{BTreeSet, HashMap, HashSet},
     ffi::c_void,
+    hash::RandomState,
 };
 
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
@@ -320,6 +321,7 @@ pub unsafe fn dump_frame() -> Frame {
         );
         FPST
     };
+    // println!("dump {}", *SOKU_FRAMECOUNT);
 
     let mut m = vec![];
 
@@ -880,7 +882,7 @@ impl ReadAddr {
             .collect()
     }
 
-    pub fn restore(self) {
+    pub fn restore(&self) {
         if self.pos == 0 || self.content.len() == 0 {
             return;
         }
@@ -1181,39 +1183,43 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn never_happened(self) {
-        let allocs: BTreeSet<_> = self.allocs.iter().collect();
-        let frees: BTreeSet<_> = self.frees.iter().collect();
+    pub fn never_happened(&self) -> (HashSet<&usize>, HashSet<&usize>) {
+        let mut allocs: HashSet<_> = self.allocs.iter().collect();
+        let mut frees: HashSet<_> = self.frees.iter().collect();
 
         let heap = unsafe { *(0x89b404 as *const isize) };
 
-        for a in allocs.intersection(&frees) {
+        let alloc_then_free: Vec<usize> = allocs.intersection(&frees).map(|x| **x).collect();
+        for a in alloc_then_free {
             #[cfg(feature = "logtofile")]
             if ISDEBUG {
                 info!("alloc: {}", a)
             };
-
-            unsafe { HeapFree(heap, 0, (**a) as *const c_void) };
+            allocs.remove(&a);
+            frees.remove(&a);
+            unsafe { HeapFree(heap, 0, a as *const c_void) };
         }
 
-        for a in allocs.difference(&frees) {
-            //println!("never freed: {}", a);
-        }
+        // for a in allocs.difference(&frees) {
+        //     //println!("never freed: {}", a);
+        // }
+        (allocs, frees)
     }
 
-    pub fn did_happen(self) {
+    pub fn did_happen(&self) {
         //let m = &mut *ALLOCMUTEX.lock().unwrap();
         //
         //for a in self.frees.iter() {
         //    m.remove(a);
         //}
 
-        for a in self.frees {
+        for a in &self.frees {
             let heap = unsafe { *(0x89b404 as *const isize) };
-            if a != 0 {
-                unsafe { HeapFree(heap, 0, a as *const c_void) };
+            if *a != 0 {
+                unsafe { HeapFree(heap, 0, *a as *const c_void) };
             }
         }
+        // self.frees = Vec::new();
     }
 
     fn size_data(&self) -> String {
@@ -1237,7 +1243,7 @@ impl Frame {
         format!("reduntant bytes: {}", counter)
     }
 
-    pub fn restore(self) {
+    pub fn restore(&self) {
         unsafe {
             FPST = self.fp;
             asm!(
@@ -1246,7 +1252,9 @@ impl Frame {
             )
         }
 
-        for a in self.adresses.clone().to_vec().into_iter() {
+        // println!("restore {}", self.number);
+
+        for a in self.adresses.into_iter() {
             a.restore();
         }
     }

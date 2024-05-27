@@ -2,13 +2,13 @@ use crate::{
     draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
     read_key_better, resume,
     rollback::{dump_frame, Frame},
-    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, INSIDE_COLOR, INSIDE_HALF_HEIGHT,
-    INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,
-    OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2,
-    SOKU_FRAMECOUNT, TAKEOVER_COLOR,
+    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, INSIDE_COLOR,
+    INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC,
+    MEMORY_RECEIVER_FREE, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR,
+    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::raw::c_void,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
@@ -20,6 +20,8 @@ use winapi::shared::{
     d3d9::IDirect3DDevice9,
     d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_RGBA, D3DPT_TRIANGLEFAN, D3DRECT},
 };
+use windows::imp::HeapFree;
+use windows::Win32::System::Console::AllocConsole;
 
 struct RePlayRePlay {
     frame: usize,
@@ -196,7 +198,7 @@ pub unsafe extern "cdecl" fn is_replay_over(
     // https://stackoverflow.com/a/46134764
     let ori_fun: unsafe extern "fastcall" fn(u32) -> bool =
         unsafe { std::mem::transmute(0x00480860) };
-    (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none()) as u32;
+    (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none() && CHECK.is_none()) as u32;
     // A workaround for removing the single (p1 only) extra input at the end of replays with KO
     // Check whether the deque saving inputs has only one element (size == 1):
     if *ptr_wrap!((*(0x0089881c as *const *const u32)).offset(0x4c / 4)) == 1 {
@@ -210,6 +212,13 @@ pub unsafe fn clean_replay_statics() {
     for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
         a.did_happen();
     }
+    if let Some(frees) = FREES.take() {
+        let heap = unsafe { *(0x89b404 as *const isize) };
+        for f in frees {
+            HeapFree(heap, 0, f as *const c_void);
+        }
+    }
+    ALLOCS = None;
 
     DISABLE_PAUSE = false;
     if RE_PLAY.is_some() {
@@ -292,6 +301,90 @@ unsafe fn load_keybinding() {
     // );
 }
 
+#[derive(Eq, PartialEq, Debug)]
+enum CheckStep {
+    TestPlay1,
+    TestPlay2,
+    TestRollback(u32, u32, bool),
+}
+#[derive(Debug)]
+struct F32 {
+    f: f32,
+}
+
+impl PartialEq for F32 {
+    fn eq(&self, other: &Self) -> bool {
+        return self.f.to_ne_bytes() == other.f.to_ne_bytes();
+    }
+}
+impl Eq for F32 {}
+
+#[derive(Eq, PartialEq, Debug)]
+struct PlayerData {
+    x_pos: F32,
+    y_pos: F32,
+    x_speed: F32,
+    y_speed: F32,
+    gravity: F32,
+    dir: i8,
+    health: i16,
+    hit_state: i32,
+    untech: i16,
+}
+
+impl PlayerData {
+    pub unsafe fn from_player(p_player: *const c_void) -> Self {
+        let p_player = p_player as *const u8;
+        Self {
+            x_pos: F32 {
+                f: *(p_player.offset(0xEC) as *const f32),
+            },
+            y_pos: F32 {
+                f: *(p_player.offset(0xF0) as *const f32),
+            },
+            x_speed: F32 {
+                f: *(p_player.offset(0xF4) as *const f32),
+            },
+            y_speed: F32 {
+                f: *(p_player.offset(0xF8) as *const f32),
+            },
+            gravity: F32 {
+                f: *(p_player.offset(0x100) as *const f32),
+            },
+            dir: *(p_player.offset(0x104) as *const i8),
+            health: *(p_player.offset(0x184) as *const i16),
+            hit_state: *(p_player.offset(0x190) as *const i32),
+            untech: *(p_player.offset(0x4BA) as *const i16),
+        }
+    }
+}
+#[derive(Eq, PartialEq, Debug)]
+struct CheckData {
+    p1_data: PlayerData,
+    p2_data: PlayerData,
+    battle_state: u32,
+}
+
+impl CheckData {
+    pub unsafe fn from_battle() -> Self {
+        let p_battle_manager = *(0x008985E4 as *const *const u8);
+        Self {
+            p1_data: PlayerData::from_player(*(p_battle_manager.offset(0xc) as *const _)),
+            p2_data: PlayerData::from_player(*(p_battle_manager.offset(0x10) as *const _)),
+            battle_state: *(p_battle_manager.offset(0x88) as *const u32),
+        }
+    }
+}
+pub struct Check {
+    check_step: CheckStep,
+    check_data: Vec<CheckData>,
+}
+static mut ALLOCS: Option<HashSet<usize>> = None;
+static mut FREES: Option<HashSet<usize>> = None;
+pub static mut CHECK: Option<Check> = None;
+// const NO_ACCESS: bool = false;
+const DEFAULT_TESTED_MAX_ROLLBACK: u32 = 6;
+const TEST_ALL_SMALLER_ROLLBACK: bool = false;
 pub unsafe fn handle_replay(
     framecount: usize,
     battle_state: &mut u32,
@@ -303,24 +396,52 @@ pub unsafe fn handle_replay(
     if framecount == 0 {
         REPLAY_KO_FRAMECOUNT = None;
         LAST_TARGET = None;
+        if read_key_better(0x2E) {
+            println!("Enter check mode.");
+            println!("Start step 1: playing the replay normally.");
+            DISABLE_SOUND = true;
+            CHECK = Some(Check {
+                check_step: CheckStep::TestPlay1,
+                check_data: Vec::new(),
+            });
+            AllocConsole();
+        } else {
+            DISABLE_SOUND = false;
+            CHECK = None
+        }; // press C
+        ALLOCS = Some(HashSet::new());
+        FREES = Some(HashSet::new());
+    } else {
+        if *cur_speed_iter == 0 && CHECK.is_some() {
+            println!("WARNING: CHECK with cur_speed_iter == 0");
+        }
+    }
+
+    while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
+        ALLOCS.as_mut().unwrap().insert(man);
+    }
+    let heap = unsafe { *(0x89b404 as *const isize) };
+    while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
+        if ALLOCS.as_ref().unwrap().contains(&man) {
+            ALLOCS.as_mut().unwrap().remove(&man);
+            HeapFree(heap, 0, man as *const c_void);
+        } else {
+            FREES.as_mut().unwrap().insert(man);
+        }
+    }
+
+    unsafe fn read_key_if_no_test(key: u8) -> bool {
+        match CHECK {
+            None => read_key_better(key),
+            Some(_) => false,
+        }
     }
     REAL_INPUT = None;
     REAL_INPUT2 = None;
-    if let Some(x) = FRAMES.lock().unwrap().last_mut() {
-        //TODO
-        while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
-            x.allocs.push(man);
-        }
-
-        while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
-            x.frees.push(man);
-            x.allocs.retain(|x| *x != man);
-        }
-    }
 
     //let scheme = [0x02, 0x03, 0x04, 0x05];
     //let scheme = [0x10, 0x11, 0x12, 0x13];
-    let mut override_target_frame = None;
+    let mut override_target_frame: Option<u32> = None;
     // println!(
     //     "{}: cur_speed_iter {}, cur_speed {}, pause {}",
     //     framecount,
@@ -329,16 +450,15 @@ pub unsafe fn handle_replay(
     //     PAUSESTATE.load(Relaxed)
     // );
 
-    if *cur_speed_iter == 0
+    if *cur_speed_iter + 1 >= *cur_speed
         && let Some(t) = LAST_TARGET.take()
-        && let should_be = t + (PAUSESTATE.load(Relaxed) == 0) as usize
-        && should_be != framecount
+        && t != framecount
     {
-        println!("mistake frame {}, should be {}", framecount, should_be);
+        println!("mistake frame {}, should be {}", framecount, t);
     }
 
     if *cur_speed_iter == 0 && framecount >= 2 {
-        let qdown = read_key_better(scheme[0]);
+        let qdown = read_key_if_no_test(scheme[0]);
         if qdown {
             if let Some(rprp) = RE_PLAY.take() {
                 override_target_frame = Some(rprp.frame as u32 - 1);
@@ -361,7 +481,7 @@ pub unsafe fn handle_replay(
             }
         }
 
-        let wdown = read_key_better(scheme[1]);
+        let wdown = read_key_if_no_test(scheme[1]);
         if wdown {
             if let Some(x) = &mut RE_PLAY {
                 x.is_p2 = false;
@@ -372,7 +492,7 @@ pub unsafe fn handle_replay(
             }
         }
 
-        let edown = read_key_better(scheme[2]);
+        let edown = read_key_if_no_test(scheme[2]);
         if edown {
             if let Some(x) = &mut RE_PLAY {
                 x.is_p2 = true;
@@ -391,7 +511,7 @@ pub unsafe fn handle_replay(
             load_keybinding();
         }
 
-        let rdown = read_key_better(scheme[3]);
+        let rdown = read_key_if_no_test(scheme[3]);
         if rdown {
             if let Some(rprp) = &RE_PLAY {
                 override_target_frame = Some(rprp.frame as u32 - 1);
@@ -409,6 +529,229 @@ pub unsafe fn handle_replay(
     }
 
     resume(battle_state);
+
+    if let Some(check) = &mut CHECK {
+        unsafe fn check_failed() {
+            println!(
+                "Check doesn't pass! Failed at frame {}. Now paused there",
+                *SOKU_FRAMECOUNT
+            );
+            CHECK = None;
+            PAUSESTATE.store(1, Relaxed);
+            FRAMES
+                .lock()
+                .unwrap()
+                .retain(|x| x.number != 0xffffffff && x.number >= 5);
+        }
+        let ori_is_replay_over: unsafe extern "fastcall" fn(u32) -> bool =
+            unsafe { std::mem::transmute(0x00480860) };
+        let is_over = ori_is_replay_over(0x898718) || *battle_state == 5;
+        unsafe fn get_input(is_p2: bool) -> [bool; 10] {
+            let p_battle_manager = *(0x008985E4 as *const *const u8);
+            let player_addr: *const u8 = match is_p2 {
+                true => *(p_battle_manager.offset(0x10) as *const _),
+                false => *(p_battle_manager.offset(0xc) as *const _),
+            };
+            let addr: *const i32 = player_addr.offset(0x754) as *const i32;
+            let mut ret = [false; 10];
+            (ret[0], ret[1]) = (*addr.offset(1) < 0, *addr.offset(1) > 0);
+            (ret[2], ret[3]) = (*addr.offset(0) < 0, *addr.offset(0) > 0);
+            for i in 2..8 {
+                ret[i - 2 + 4] = *addr.offset(i as isize) > 0;
+            }
+            ret
+        }
+        unsafe fn apply_old_input() {
+            REAL_INPUT = Some(get_input(false));
+            REAL_INPUT2 = Some(get_input(true));
+            // println!("{:?} {:?}", REAL_INPUT, REAL_INPUT2);
+        }
+        match check.check_step {
+            CheckStep::TestPlay1 => {
+                check.check_data.push(CheckData::from_battle());
+                if is_over {
+                    override_target_frame = Some(1);
+                    check.check_step = CheckStep::TestPlay2;
+                    FRAMES.lock().unwrap().push(dump_frame());
+                    println!("Step 1 got {} frames.", check.check_data.len());
+                    println!("Start step 2: rollbacking to the beginning and replaying the replay.")
+                } else {
+                    override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
+                }
+            }
+            CheckStep::TestPlay2 => {
+                if *SOKU_FRAMECOUNT >= check.check_data.len() {
+                    println!(
+                        "Step 2 got more frame then {} got by step 1, at frame {}.",
+                        *SOKU_FRAMECOUNT + 1,
+                        *SOKU_FRAMECOUNT
+                    );
+                    check_failed();
+                } else if check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle() {
+                    println!("Step 2 has different at frame {}.", *SOKU_FRAMECOUNT);
+                    check_failed();
+                } else if is_over {
+                    if *SOKU_FRAMECOUNT + 1 < check.check_data.len() {
+                        println!("Step 2 ends too early at frame {}.", *SOKU_FRAMECOUNT);
+                        check_failed();
+                    } else {
+                        println!("Step 2 is consistent with step 1. Step 2 pass!");
+                        println!("Step 3: replaying the replay with rollbacks everywhere");
+                        override_target_frame = Some(1);
+                        // apply_old_input();
+                        check.check_step = CheckStep::TestRollback(1, 1, false);
+                    }
+                } else {
+                    override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
+                }
+            }
+            // CheckStep::TestRollback(being_tested_frame, cur_rollback) => {
+            //     if *SOKU_FRAMECOUNT >= check.check_data.len() {
+            //         println!(
+            //             "Step 3 got more frame then {} got by step 1, at frame {}.",
+            //             *SOKU_FRAMECOUNT + 1,
+            //             *SOKU_FRAMECOUNT
+            //         );
+            //         check_failed();
+            //     } else if check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle() {
+            //         println!("Step 3 has different at frame {}.", *SOKU_FRAMECOUNT);
+            //         check_failed();
+            //     } else if is_over {
+            //         if *SOKU_FRAMECOUNT + 1 < check.check_data.len() {
+            //             println!("Step 3 ends too early at frame {}.", *SOKU_FRAMECOUNT);
+            //             check_failed();
+            //         } else {
+            //             println!("All tests passed!");
+            //             CHECK = None;
+            //         }
+            //     } else {
+            //         // println!("{}", *SOKU_FRAMECOUNT);
+            //         if *SOKU_FRAMECOUNT as u32 == being_tested_frame {
+            //             if being_tested_frame % 300 == 0 {
+            //                 println!("{} / {}", being_tested_frame + 1, check.check_data.len());
+            //                 println!("{:?}", check.check_data[*SOKU_FRAMECOUNT]);
+            //             };
+            //             if cur_rollback == DEFAULT_TESTED_MAX_ROLLBACK {
+            //                 let mut map = FRAMES.lock().unwrap();
+            //                 assert_eq!(map.len() + 1, *SOKU_FRAMECOUNT);
+            //                 let back_frame = match DEFAULT_TESTED_MAX_ROLLBACK {
+            //                     1 => DEFAULT_TESTED_MAX_ROLLBACK,
+            //                     _ => DEFAULT_TESTED_MAX_ROLLBACK - 1,
+            //                 } as usize;
+            //                 let old_frame = &map[map.len() - back_frame];
+            //                 assert_eq!(old_frame.number, being_tested_frame as usize - back_frame);
+            //                 // println!("did_happen frame {} >>>", old_frame.number);
+            //                 old_frame.did_happen();
+            //                 // println!("did_happen frame {} <<<", old_frame.number);
+            //                 let i = map.len() - DEFAULT_TESTED_MAX_ROLLBACK as usize;
+            //                 map[i].allocs = Vec::new();
+            //                 map[i].frees = Vec::new();
+            //                 map[i].adresses = Vec::new().into_boxed_slice();
+            //                 map[i].number = 0xffffffff;
+            //             }
+            //             let (new_tested_frame, tested_rollback) = if cur_rollback <= 1 {
+            //                 (being_tested_frame + 1, DEFAULT_TESTED_MAX_ROLLBACK)
+            //             } else {
+            //                 (being_tested_frame, cur_rollback - 1)
+            //                 // (being_tested_frame + 1, DEFAULT_TESTED_MAX_ROLLBACK)
+            //             };
+            //             override_target_frame = Some(new_tested_frame - tested_rollback);
+            //             check.check_step =
+            //                 CheckStep::TestRollback(new_tested_frame, tested_rollback);
+            //             // println!("{:?}", check.check_step);
+            //         } else {
+            //             override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
+            //         }
+            //     }
+            CheckStep::TestRollback(being_tested_frame, cur_rollback, stepping) => {
+                // println!("{}", *SOKU_FRAMECOUNT);
+                if stepping
+                    && *SOKU_FRAMECOUNT < check.check_data.len()
+                    && check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle()
+                {
+                    println!("Step 3 has different at frame {}.", being_tested_frame);
+                    check_failed();
+                } else if stepping && *SOKU_FRAMECOUNT + 1 < check.check_data.len() && is_over {
+                    println!("Step 3 ends too early at frame {}.", being_tested_frame);
+                    check_failed();
+                } else if *SOKU_FRAMECOUNT as u32 == being_tested_frame + cur_rollback {
+                    let being_tested_frame_ = being_tested_frame as usize;
+                    if being_tested_frame_ >= check.check_data.len() {
+                        println!(
+                            "Step 3 got more frame then {} got by step 1, at frame {}.",
+                            being_tested_frame + 1,
+                            being_tested_frame
+                        );
+                        check_failed();
+                    } else if being_tested_frame_ + 1 == check.check_data.len() {
+                        println!("All tests passed!");
+                        PAUSESTATE.store(1, Relaxed);
+                        FRAMES
+                            .lock()
+                            .unwrap()
+                            .retain(|x| x.number != 0xffffffff && x.number >= 5);
+                        CHECK = None;
+                    } else {
+                        let (new_tested_frame, tested_rollback, step) =
+                            match (cur_rollback == DEFAULT_TESTED_MAX_ROLLBACK, stepping) {
+                                (_, false) => (being_tested_frame, cur_rollback, true),
+                                (false, true) => (being_tested_frame, cur_rollback + 1, false),
+                                (true, true) => {
+                                    // println!("clear frame {}", being_tested_frame);
+                                    let mut map = FRAMES.lock().unwrap();
+                                    assert_eq!(map.len(), *SOKU_FRAMECOUNT - 1);
+                                    let i = map.len() - cur_rollback as usize;
+                                    assert_eq!(i, being_tested_frame_ - 1);
+                                    let mut cur_frame = map.get_mut(i).unwrap();
+                                    assert_eq!(cur_frame.number, being_tested_frame_);
+                                    // let mut cur_frame = map.get_mut(i).unwrap();
+                                    // println!("did_happen frame {} >>>", old_frame.number);
+                                    cur_frame.did_happen();
+                                    // println!("did_happen frame {} <<<", old_frame.number);
+                                    // if i >= 3 && i % 16 != 0 {
+                                    cur_frame.allocs = Vec::new();
+                                    cur_frame.frees = Vec::new();
+                                    cur_frame.adresses = Vec::new().into_boxed_slice();
+                                    cur_frame.number = 0xffffffff;
+                                    // }
+                                    if being_tested_frame % 300 == 0 {
+                                        println!(
+                                            "{} / {}",
+                                            being_tested_frame + 1,
+                                            check.check_data.len()
+                                        );
+                                        println!("{:?}", check.check_data[being_tested_frame_]);
+                                    };
+                                    (
+                                        being_tested_frame + 1,
+                                        match TEST_ALL_SMALLER_ROLLBACK {
+                                            true => 1,
+                                            false => DEFAULT_TESTED_MAX_ROLLBACK,
+                                        },
+                                        false,
+                                    )
+                                }
+                            };
+                        override_target_frame = Some(new_tested_frame);
+                        check.check_step =
+                            CheckStep::TestRollback(new_tested_frame, tested_rollback, step);
+                        // if !step {
+                        //     apply_old_input();
+                        // }
+                    }
+                    // println!("{:?}", check.check_step);
+                } else {
+                    if !stepping {
+                        apply_old_input();
+                        // override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
+                    }
+                    override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
+                }
+            }
+        }
+        // println!("target {:?}", override_target_frame);
+    }
+
     if RE_PLAY.is_some() || PAUSESTATE.load(Relaxed) == 0 {
         REWIND_PRESSED_LAST_FRAME = false;
     }
@@ -416,6 +759,7 @@ pub unsafe fn handle_replay(
         && PAUSESTATE.load(Relaxed) != 0
         && override_target_frame.is_none()
         && RE_PLAY.is_none()
+        && CHECK.is_none()
     {
         match (*cur_speed, REWIND_PRESSED_LAST_FRAME) {
             (16, false) => {
@@ -440,11 +784,11 @@ pub unsafe fn handle_replay(
 
     /*
        let wthr = 0x8971d0;
-       if *(wthr as *const usize) != 11 && read_key_better(0x18) {
+       if *(wthr as *const usize) != 11 && read_key_if_no_test(0x18) {
            *cur_speed = 1024;
        }
 
-       if *cur_speed == 1024 && read_key_better(0x18) && *(wthr as *const usize) == 11{
+       if *cur_speed == 1024 && read_key_if_no_test(0x18) && *(wthr as *const usize) == 11{
            *cur_speed_iter = 1024;
        }
     */
@@ -452,7 +796,7 @@ pub unsafe fn handle_replay(
         let speed = 4096;
 
         let condition = matches!(battle_state, 5 | 3);
-        let key = read_key_better(0x18);
+        let key = read_key_if_no_test(0x18);
 
         if !condition && key {
             *cur_speed = speed;
@@ -463,7 +807,8 @@ pub unsafe fn handle_replay(
         }
     }
 
-    if *cur_speed_iter == 0 {
+    let mut pause_for_override_target_frame: bool = false;
+    if *cur_speed_iter == 0 || override_target_frame.is_some() {
         //"true" frame
 
         IS_REWINDING.store(0, Relaxed);
@@ -474,11 +819,15 @@ pub unsafe fn handle_replay(
                     x
                 } else {
                     *cur_speed_iter = 1;
-                    *cur_speed = 2 + x - framecount as u32;
+                    pause_for_override_target_frame = x == framecount as u32;
+                    *cur_speed = match pause_for_override_target_frame {
+                        true => 3,
+                        false => 2 + x - framecount as u32,
+                    };
                     break 'to_target_frame;
                 }
             } else {
-                let qdown = read_key_better(0x10);
+                let qdown = read_key_if_no_test(0x10);
                 if qdown && RE_PLAY.is_none() {
                     let target = (framecount).saturating_sub(*cur_speed as usize + 1);
                     target as u32
@@ -486,6 +835,7 @@ pub unsafe fn handle_replay(
                     break 'to_target_frame;
                 }
             };
+            LAST_TARGET = Some(target as _);
 
             // println!("target {}", target);
 
@@ -493,21 +843,47 @@ pub unsafe fn handle_replay(
             let mut map = mutex;
             let frames = &mut *map;
             let mut last: Option<Frame> = None;
+            let (mut allocs, mut frees) = (HashSet::<usize>::new(), HashSet::<usize>::new());
             loop {
-                let candidate = frames.pop();
+                let candidate = frames.last_mut();
                 if let Some(x) = candidate {
-                    // println!("pop {}", x.number);
-                    if let Some(x) = last {
-                        x.never_happened();
+                    if let Some(x) = last.take() {
+                        // println!("never_happen frame {} >>>", x.number);
+                        let (allocs_, frees_) = x.never_happened();
+                        allocs.extend(allocs_.into_iter().map(|x| *x));
+                        frees.extend(frees_.into_iter().map(|x| *x));
+                        let alloc_then_free: Vec<_> = allocs
+                            .intersection(&frees)
+                            .into_iter()
+                            .map(|x| *x)
+                            .collect();
+                        for p in alloc_then_free {
+                            HeapFree(heap, 0, p as *const c_void);
+                            allocs.remove(&p);
+                            frees.remove(&p);
+                        }
+                        // for a in allocs {
+                        //     ALLOCS.as_mut().unwrap().insert(*a);
+                        // }
+                        // for f in frees {
+                        //     FREES.as_mut().unwrap().insert(*f);
+                        // }
                     }
-
+                    // println!("pop {}", x.number);
                     let framenum = x.number as u32;
                     if framenum <= target {
                         IS_REWINDING.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
-
-                        x.clone().restore();
+                        assert!(x.number != 0 && x.number != 0xffffffff);
+                        // x.allocs
+                        //     .extend(ALLOCS.replace(HashSet::new()).unwrap().into_iter());
+                        // x.frees
+                        //     .extend(ALLOCS.replace(HashSet::new()).unwrap().into_iter());
+                        ALLOCS.as_mut().unwrap().clear();
+                        FREES.as_mut().unwrap().clear();
+                        x.restore();
+                        // println!("restore frame {} <<<", x.number);
                         //x.did_happen();
                         //dump_frame();
                         //unsafe {
@@ -525,8 +901,13 @@ pub unsafe fn handle_replay(
                         //}
 
                         *cur_speed_iter = 1;
-                        *cur_speed = 2 + diff;
-                        LAST_TARGET = Some(target as _);
+                        if diff == 0 {
+                            pause_for_override_target_frame = true;
+                        }
+                        *cur_speed = match pause_for_override_target_frame {
+                            true => 3,
+                            false => 2 + diff,
+                        };
                         //                        let diff = 1;
 
                         if diff <= 0 && false {
@@ -534,24 +915,22 @@ pub unsafe fn handle_replay(
                             *cur_speed_iter = *cur_speed;
                             return;
                         }
-
-                        if diff > 0 {
-                            println!("push {}", x.number);
-                            map.push(x);
-                        }
-
                         break;
                     } else {
-                        last = Some(x);
+                        last = Some(frames.pop().unwrap());
+                        if last.as_ref().unwrap().number == 0xffffffff {
+                            println!("WARNING: invalid frame!");
+                        }
                         continue;
                     }
                 } else {
                     //nothing can be done ?
-                    // println!("nothing popped");
+                    println!("No such eailer frame to use");
 
-                    if let Some(last) = last {
+                    if let Some(last) = last.take() {
+                        // it can happen when rewind to frame 1
                         last.restore();
-                        //did it happen?
+                        frames.push(last);
                     }
                     pause(battle_state, weird_counter);
                     *cur_speed_iter = *cur_speed;
@@ -571,29 +950,47 @@ pub unsafe fn handle_replay(
         rprp.apply_input();
     }
 
-    if PAUSESTATE.load(Relaxed) != 0 {
-        if *cur_speed_iter + 1 >= *cur_speed {
-            pause(battle_state, weird_counter);
-        }
-        return;
-    }
-
     let framecount = *SOKU_FRAMECOUNT;
 
-    if framecount % 16 == 1
+    if framecount == 1
+        || framecount == 2
+        || framecount % 16 == 1
         || IS_REWINDING.load(Relaxed) == 1
         || match &RE_PLAY {
             Some(rprp) => rprp.frame - 1 == framecount,
             _ => false,
         }
+        || match &CHECK {
+            Some(check) => matches!(check.check_step, CheckStep::TestRollback(_, __, ___)),
+            _ => false,
+        }
     {
-        let frame = dump_frame();
-
         let mut mutex = FRAMES.lock().unwrap();
-
-        // println!("push {}", frame.number);
-        mutex.push(frame);
+        if framecount == 0 {
+            println!("try to save frame 0! stop it!");
+        } else if mutex.is_empty() || mutex.last().unwrap().number != *SOKU_FRAMECOUNT {
+            let mut x = dump_frame();
+            x.allocs = ALLOCS
+                .replace(HashSet::new())
+                .unwrap()
+                .into_iter()
+                .collect();
+            x.frees = FREES.replace(HashSet::new()).unwrap().into_iter().collect();
+            // x.allocs.unwrap().retain(|x| !allocs.unwrap().contains(x));
+            // println!("push {}", x.number);
+            mutex.push(x);
+        }
+    } else {
+        // println!("cannot push?");
     }
+
+    if (PAUSESTATE.load(Relaxed) != 0 && *cur_speed_iter + 1 >= *cur_speed)
+        || pause_for_override_target_frame
+    {
+        pause(battle_state, weird_counter);
+    }
+    return;
+
     // println!(
     //     "{} {} {}",
     //     cur_speed,

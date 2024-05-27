@@ -85,8 +85,9 @@ static mut ENABLE_PRINTLN: bool = false;
 macro_rules! println {
     ($($arg:tt)*) => {{
         use crate::ENABLE_PRINTLN;
+        use crate::replay::CHECK;
         #[allow(unused_unsafe)]
-        if unsafe { ENABLE_PRINTLN } {
+        if unsafe { ENABLE_PRINTLN } || unsafe { CHECK.is_some() } {
             std::println!($($arg)*);
         }
     }};
@@ -127,25 +128,26 @@ pub fn pointer_debug_str<T>(p: *const T) -> String {
 #[macro_export]
 macro_rules! ptr_wrap {
     ($src:expr) => {
-        match ($src) {
-            src_ => {
-                use crate::{pointer_debug_str, warning_box};
-                if !src_.is_aligned() {
-                    warning_box(
-                        format!(
-                            "Unaligned pointer at {}:{} :\n{}",
-                            file!(),
-                            line!(),
-                            pointer_debug_str(src_)
-                        )
-                        .as_str(),
-                        "Unaligned pointer!",
-                    );
-                    panic!();
-                }
-                src_
-            }
-        }
+        ($src)
+        // match ($src) {
+        //     src_ => {
+        //         use crate::{pointer_debug_str, warning_box};
+        //         if !src_.is_aligned() {
+        //             warning_box(
+        //                 format!(
+        //                     "Unaligned pointer at {}:{} :\n{}",
+        //                     file!(),
+        //                     line!(),
+        //                     pointer_debug_str(src_)
+        //                 )
+        //                 .as_str(),
+        //                 "Unaligned pointer!",
+        //             );
+        //             panic!();
+        //         }
+        //         src_
+        //     }
+        // }
     };
 }
 
@@ -157,7 +159,7 @@ unsafe fn tamper_memory<T>(dst: *mut T, src: T) -> T {
         VirtualProtect(
             dst as *const c_void,
             std::mem::size_of::<T>(),
-            PAGE_READWRITE,
+            PAGE_EXECUTE_READWRITE,
             std::ptr::addr_of_mut!(old_prot_ptr),
         ),
         TRUE,
@@ -219,11 +221,12 @@ pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
 // 85b8ec some related varible, 487040
 #[no_mangle]
 pub extern "cdecl" fn CheckVersion(a: *const [u8; 16]) -> bool {
-    const HASH110A: [u8; 16] = [
-        0xdf, 0x35, 0xd1, 0xfb, 0xc7, 0xb5, 0x83, 0x31, 0x7a, 0xda, 0xbe, 0x8c, 0xd9, 0xf5, 0x3b,
-        0x2e,
-    ];
-    unsafe { *ptr_wrap!(a) == HASH110A }
+    // const HASH110A: [u8; 16] = [
+    //     0xdf, 0x35, 0xd1, 0xfb, 0xc7, 0xb5, 0x83, 0x31, 0x7a, 0xda, 0xbe, 0x8c, 0xd9, 0xf5, 0x3b,
+    //     0x2e,
+    // ];
+    // unsafe { *ptr_wrap!(a) == HASH110A }
+    return true;
 }
 
 static mut REAL_INPUT: Option<[bool; 10]> = None;
@@ -282,6 +285,8 @@ static mut OUTER_HALF_HEIGHT: i32 = 9;
 static mut OUTER_HALF_WIDTH: i32 = 60;
 
 static mut FRAME_ONE_FREEZE_MITIGATION: bool = false;
+
+static mut DISABLE_SOUND: bool = false;
 
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
@@ -584,6 +589,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         (*a).eax = (((*a).esp + 4) as *const u32).read_unaligned();
         let soundid = (*a).eax as usize;
 
+        if DISABLE_SOUND {
+            return 0x401db7;
+        }
+
         if !BATTLE_STARTED || soundid == 0 {
             return if soundid == 0 { 0x401db7 } else { 0x401d58 };
         }
@@ -661,6 +670,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         .hook(5)
     };
     std::mem::forget(new);
+
+    // println!("DEBUG: disable sound");
+    // // disable sound
+    // assert_eq!(unsafe { tamper_memory(0x00401d56 as *mut u8, 0xeb) }, 0x74);
+    // assert_eq!(unsafe { *(0x00401d56 as *mut u8) }, 0xeb);
 
     unsafe extern "cdecl" fn on_exit(_: *mut ilhook::x86::Registers, _: usize) {
         println!("on exit");
@@ -871,10 +885,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         );
     }
 
-    let s = 0x822499; //0x822465;
-    let new =
-        unsafe { ilhook::x86::Hooker::new(s, HookType::JmpBack(heap_alloc_esi_result), 0).hook(6) };
-    std::mem::forget(new);
+    // let s = 0x822499; //0x822465;
+    // let new =
+    //     unsafe { ilhook::x86::Hooker::new(s, HookType::JmpBack(heap_alloc_esi_result), 0).hook(6) };
+    // std::mem::forget(new);
 
     /*
        for c in [0x82346f, 0x8233ee, 0x82f125] {
@@ -1194,16 +1208,22 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     unsafe extern "cdecl" fn sniff_sent(a: *mut ilhook::x86::Registers, _b: usize) {
         let ptr = ((*a).edi + 0x1c) as *const u8;
+        let packet_size = *(((*a).edi + 0x18) as *const usize);
         let buf = std::slice::from_raw_parts(ptr, 400);
 
         // Ensure we don't assign the GAME_REQUEST packet for spectators to LAST_GAME_REQUEST.
-        if buf[0] == if is_p1() { 13 } else { 14 } && buf[1] == 4 && LAST_GAME_REQUEST.is_none() {
-            let mut m = [0; 400];
-            for i in 0..buf.len() {
-                m[i] = buf[i];
+        if buf[0] == if is_p1() { 13 } else { 14 } && buf[1] == 4 {
+            if let Some(old_game_request) = LAST_GAME_REQUEST {
+                println!("sending more game request!");
+                assert_eq!(old_game_request[0..packet_size], buf[0..packet_size]);
+            } else {
+                let mut m = [0; 400];
+                for i in 0..buf.len() {
+                    m[i] = buf[i];
+                }
+                println!("get game request!");
+                LAST_GAME_REQUEST = Some(m);
             }
-            println!("get game request!");
-            LAST_GAME_REQUEST = Some(m);
         }
 
         if (buf[0] == 13 || buf[0] == 14) && buf[1] == 2 {
@@ -1441,14 +1461,14 @@ unsafe extern "stdcall" fn heap_alloc_override(heap: isize, flags: u32, s: usize
     return ret;
 }
 
-unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
-    if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed)
-        /* && matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) */
-        && *SOKU_FRAMECOUNT != 0
-    {
-        store_alloc((*a).esi as usize);
-    }
-}
+// unsafe extern "cdecl" fn heap_alloc_esi_result(a: *mut ilhook::x86::Registers, _b: usize) {
+//     if GetCurrentThreadId() == REQUESTED_THREAD_ID.load(Relaxed)
+//         /* && matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd) */
+//         && *SOKU_FRAMECOUNT != 0
+//     {
+//         store_alloc((*a).esi as usize);
+//     }
+// }
 
 #[allow(unused)]
 unsafe extern "cdecl" fn reallochook(a: *mut ilhook::x86::Registers, _b: usize) {}
@@ -1485,7 +1505,7 @@ unsafe extern "stdcall" fn recvfrom_with_fake_packet(
 ) -> u32 {
     if let Some(ori_recvfrom) = ORI_RECVFROM {
         if AFTER_GAME_REQUEST_FROM_P1 {
-            AFTER_GAME_REQUEST_FROM_P1 = false;
+            // AFTER_GAME_REQUEST_FROM_P1 = false;
             let netmanager = *(0x8986a0 as *const usize);
             let to;
             if *(netmanager as *const usize) == 0x858cac {
@@ -1638,8 +1658,8 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     }
 
     if type1 == 14 || type1 == 13 {
-        if type2 == 4 {
-            if FRAME_ONE_FREEZE_MITIGATION {
+        if FRAME_ONE_FREEZE_MITIGATION {
+            if type2 == 4 {
                 if HAS_LOADED {
                     println!("Receive redundance GAME_REQUEST. Ignore it.");
                     slic[0] = 0;
@@ -1654,23 +1674,35 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                         }
                     } else {
                         println!(
-                            "WHILE the scene isn't SELECTSV or SELECTCL. It is {} instead. How can it happen?",
+                            "WHILE the scene isn't SELECTSV or SELECTCL. It is {} instead.",
                             *(0x008A0044 as *const u32)
                         )
                     }
                 }
-            }
-            HAS_LOADED = true;
-            //println!("has loaded !");
-        }
 
-        if type2 == 5
-            && (*(0x008A0044 as *const u32) == 10 || *(0x008A0044 as *const u32) == 11)
-            && !is_p1()
-        {
-            if let Some(gr) = LAST_GAME_REQUEST {
-                println!("the opponent is requesting GAME_REQUEST packet. reply it with LAST_GAME_REQUEST.");
-                send_packet_untagged(Box::new(gr));
+                HAS_LOADED = true;
+                //println!("has loaded !");
+            }
+
+            if type2 == 5
+                && ([8, 9, 10, 11] as [usize; 4])
+                    .contains((0x008A0044 as *const usize).as_ref().unwrap())
+                && !is_p1()
+            {
+                if (AFTER_GAME_REQUEST_FROM_P1) {
+                    println!("p2 get its fake packet [{},{}]", type1, type2);
+                    AFTER_GAME_REQUEST_FROM_P1 = false;
+                } else {
+                    if !is_p1() {
+                        println!("p2 get [{},{}]. not send it to the game.", type1, type2);
+                        slic[0] = 0;
+                    }
+                    if let Some(gr) = LAST_GAME_REQUEST {
+                        println!("the opponent is requesting GAME_REQUEST packet. reply it with LAST_GAME_REQUEST.");
+                        send_packet_untagged(Box::new(gr));
+                        slic[0] = 0;
+                    }
+                }
             }
         }
 
@@ -1904,20 +1936,24 @@ fn draw_num_x_center(pos: (f32, f32), num: i32) {
 }
 
 fn pause(battle_state: &mut u32, state_sub_count: &mut u32) {
+    // print!("pause {} ->", *battle_state);
     if *battle_state != 4 {
         LAST_STATE.store(*battle_state as u8, Relaxed);
         *state_sub_count = state_sub_count.wrapping_sub(1);
         *battle_state = 4;
     }
+    // println!(" {}", *battle_state);
 }
 fn resume(battle_state: &mut u32) {
     // should be called every frame because fo the logic set in fn pause involving state_sub_count
     let last = LAST_STATE.load(Relaxed);
+    // print!("resume (last: {}) {} ->", last, *battle_state);
     if last != 0x6b && *battle_state == 4 {
         //4 check to not accidentally override a state set by the game *maybe*
         *battle_state = last as u32;
         LAST_STATE.store(0x6b, Relaxed)
     }
+    // println!(" {}", *battle_state);
 }
 //        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
 
