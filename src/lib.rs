@@ -285,6 +285,7 @@ static mut OUTER_HALF_HEIGHT: i32 = 9;
 static mut OUTER_HALF_WIDTH: i32 = 60;
 
 static mut FRAME_ONE_FREEZE_MITIGATION: bool = false;
+static mut ENABLE_CHECK_MODE: bool = false;
 
 static mut DISABLE_SOUND: bool = false;
 
@@ -401,6 +402,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         "enable_println",
         cfg!(feature = "allocconsole") || ISDEBUG,
     );
+    let enable_check_mode = read_ini_bool(&conf, "Misc", "enable_check_mode", false);
     let outer_color: D3DCOLOR = read_ini_int_hex(
         &conf,
         "Takeover",
@@ -521,6 +523,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         OUTER_HALF_WIDTH = outer_half_width as i32;
         FRAME_ONE_FREEZE_MITIGATION = frame_one_freeze_mitigation;
         ENABLE_PRINTLN = enable_println;
+        ENABLE_CHECK_MODE = enable_check_mode;
     }
 
     unsafe {

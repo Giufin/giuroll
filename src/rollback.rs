@@ -1254,7 +1254,7 @@ impl Frame {
 
         // println!("restore {}", self.number);
 
-        for a in self.adresses.into_iter() {
+        for a in self.adresses.iter() {
             a.restore();
         }
     }

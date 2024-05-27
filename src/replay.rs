@@ -2,10 +2,10 @@ use crate::{
     draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
     read_key_better, resume,
     rollback::{dump_frame, Frame},
-    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, INSIDE_COLOR,
-    INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE, MEMORY_RECEIVER_ALLOC,
-    MEMORY_RECEIVER_FREE, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR,
-    REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
+    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, ENABLE_CHECK_MODE,
+    INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
+    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH,
+    PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -396,7 +396,7 @@ pub unsafe fn handle_replay(
     if framecount == 0 {
         REPLAY_KO_FRAMECOUNT = None;
         LAST_TARGET = None;
-        if read_key_better(0x2E) {
+        if ENABLE_CHECK_MODE && read_key_better(0x2E) {
             println!("Enter check mode.");
             println!("Start step 1: playing the replay normally.");
             DISABLE_SOUND = true;
