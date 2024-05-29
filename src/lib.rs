@@ -175,6 +175,39 @@ unsafe fn tamper_memory<T>(dst: *mut T, src: T) -> T {
     return ori;
 }
 
+unsafe fn jmp_relative_opt_to_pointer<T: Sized>(jmp_addr: *const c_void) -> T {
+    let p_offset = (jmp_addr as *mut u8).offset(1) as *mut usize;
+    let end = (jmp_addr as usize).wrapping_add(1 + std::mem::size_of::<usize>());
+    let ret = end.wrapping_add(p_offset.read_unaligned());
+    assert_eq!(core::mem::size_of::<T>(), std::mem::size_of::<usize>());
+    return std::mem::transmute_copy(&ret);
+}
+
+unsafe fn tamper_jmp_relative_opr<T: Sized>(dst: *mut c_void, src: T) -> T {
+    let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+    let p_offset = (dst as *mut u8).offset(1) as *mut usize;
+    let end = (dst as usize).wrapping_add(1 + std::mem::size_of::<usize>());
+    assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<usize>());
+    let ret = jmp_relative_opt_to_pointer(dst);
+    assert_eq!(
+        VirtualProtect(
+            p_offset as *const c_void,
+            std::mem::size_of::<usize>(),
+            PAGE_EXECUTE_READWRITE,
+            std::ptr::addr_of_mut!(old_prot_ptr),
+        ),
+        TRUE,
+    );
+    p_offset.write_unaligned((std::mem::transmute_copy::<T, usize>(&src)).wrapping_sub(end));
+    VirtualProtect(
+        p_offset as *const c_void,
+        std::mem::size_of::<usize>(),
+        old_prot_ptr,
+        std::ptr::addr_of_mut!(old_prot_ptr),
+    );
+    return ret;
+}
+
 // calling convention here was changed from cdecl to C because of the requirements of the new library. Thankfully they appear to be aliases in the current ABI
 #[no_mangle]
 pub unsafe extern "C" fn exeinit() {
@@ -749,15 +782,18 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     in vanilla game
     */
     unsafe {
-        for addr in [0x6d8288, 0x6dcc0c] {
-            let mut previous = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                addr as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut previous,
+        unsafe extern "stdcall" fn override_play_sfx(sound_id: u32) {
+            // refer to https://github.com/enebe-nb/SokuLib/blob/dev/src/BattleMode.cpp
+            let is_story_or_result_mode = matches!(*(0x00898690 as *const u32), 0 | 7);
+            if is_story_or_result_mode || sound_id != 0x2c {
+                std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x439490)(sound_id);
+            }
+        }
+        for addr in [0x6d828b, 0x6dcc0f] {
+            tamper_jmp_relative_opr(
+                addr as *mut c_void,
+                override_play_sfx as unsafe extern "stdcall" fn(u32),
             );
-            *(addr as *mut u8) = 0x80;
         }
     };
 
@@ -2109,7 +2145,8 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         _ => (),
     }
 
-    if matches!(*battle_state, 3 | 5) {
+    let is_story_or_result_mode = matches!(*(0x00898690 as *const u32), 0 | 7);
+    if !is_story_or_result_mode && matches!(*battle_state, 3 | 5) {
         // together with the no_ko_sound hook. Explanation in the no_ko_sound hook.
         //IS_KO = true;
         if *state_sub_count == 1 {
