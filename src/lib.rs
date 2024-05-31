@@ -10,7 +10,7 @@ use std::{
     mem::align_of,
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
-    ptr::{null, null_mut},
+    ptr::{addr_of_mut, null, null_mut},
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -153,8 +153,9 @@ macro_rules! ptr_wrap {
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 
-unsafe fn tamper_memory<T>(dst: *mut T, src: T) -> T {
+unsafe fn tamper_memory<T: Sized>(dst: *mut T, src: T) -> T {
     let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
+    assert_ne!(std::mem::size_of::<T>(), 0);
     assert_eq!(
         VirtualProtect(
             dst as *const c_void,

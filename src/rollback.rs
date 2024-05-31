@@ -1183,13 +1183,13 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn never_happened(&self) -> (HashSet<&usize>, HashSet<&usize>) {
-        let mut allocs: HashSet<_> = self.allocs.iter().collect();
-        let mut frees: HashSet<_> = self.frees.iter().collect();
+    pub fn never_happened(&self) -> (HashSet<usize>, HashSet<usize>) {
+        let mut allocs: HashSet<usize> = self.allocs.iter().map(|x| *x).collect();
+        let mut frees: HashSet<usize> = self.frees.iter().map(|x| *x).collect();
 
         let heap = unsafe { *(0x89b404 as *const isize) };
 
-        let alloc_then_free: Vec<usize> = allocs.intersection(&frees).map(|x| **x).collect();
+        let alloc_then_free: Vec<usize> = allocs.intersection(&frees).map(|x| *x).collect();
         for a in alloc_then_free {
             #[cfg(feature = "logtofile")]
             if ISDEBUG {

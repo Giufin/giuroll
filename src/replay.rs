@@ -850,8 +850,8 @@ pub unsafe fn handle_replay(
                     if let Some(x) = last.take() {
                         // println!("never_happen frame {} >>>", x.number);
                         let (allocs_, frees_) = x.never_happened();
-                        allocs.extend(allocs_.into_iter().map(|x| *x));
-                        frees.extend(frees_.into_iter().map(|x| *x));
+                        allocs.extend(allocs_);
+                        frees.extend(frees_);
                         let alloc_then_free: Vec<_> = allocs
                             .intersection(&frees)
                             .into_iter()
