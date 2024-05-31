@@ -9,9 +9,8 @@ use std::{
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
-    set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
-    SOUND_MANAGER,
-    callbackArray, Callbacks
+    set_input_buffer, Callbacks, CALLBACK_ARRAY, ISDEBUG, MEMORY_RECEIVER_ALLOC,
+    MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];
@@ -244,7 +243,7 @@ impl Rollbacker {
             //    println!("here");
             //}
 
-            let current = unsafe {*SOKU_FRAMECOUNT};
+            let current = unsafe { *SOKU_FRAMECOUNT };
 
             let si = self.self_inputs[current];
             let ei = self.enemy_inputs.get(current);
@@ -843,15 +842,12 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(x);
     }
 
-    let mut extraStates: Vec<ExtraState> = Vec::new();
+    let mut extra_states: Vec<ExtraState> = Vec::new();
 
-    for cb in callbackArray.clone().into_iter() {
-        let i = (cb.saveState)();
+    for cb in CALLBACK_ARRAY.iter() {
+        let i = (cb.save_state)();
 
-        extraStates.push(ExtraState {
-            cb: cb,
-            state: i
-        })
+        extra_states.push(ExtraState { cb: *cb, state: i })
     }
 
     Frame {
@@ -860,7 +856,7 @@ pub unsafe fn dump_frame() -> Frame {
         fp: w,
         frees: vec![],
         allocs: vec![],
-        extraStates: extraStates,
+        extra_states,
         weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
             & 0xFF) as u8,
     }
@@ -1181,7 +1177,7 @@ fn get_ptr(from: &[u8], offset: usize) -> usize {
 #[derive(Debug, Clone)]
 struct ExtraState {
     cb: Callbacks,
-    state: u32
+    state: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1191,7 +1187,7 @@ pub struct Frame {
     pub fp: [u8; 108],
     pub frees: Vec<usize>,
     pub allocs: Vec<usize>,
-    pub extraStates: Vec<ExtraState>,
+    pub extra_states: Vec<ExtraState>,
 
     pub weather_sync_check: u8,
 }
@@ -1215,8 +1211,10 @@ impl Frame {
         for a in allocs.difference(&frees) {
             //println!("never freed: {}", a);
         }
-        for a in self.extraStates.clone().into_iter() {
-            unsafe { (a.cb.freeState)(a.state); }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.free_state)(a.state, true);
+            }
         }
     }
 
@@ -1233,8 +1231,10 @@ impl Frame {
                 unsafe { HeapFree(heap, 0, a as *const c_void) };
             }
         }
-        for a in self.extraStates.clone().into_iter() {
-            unsafe { (a.cb.freeState)(a.state); }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.free_state)(a.state, false);
+            }
         }
     }
 
@@ -1268,14 +1268,18 @@ impl Frame {
             )
         }
 
-        for a in self.extraStates.clone().into_iter() {
-           unsafe { (a.cb.loadStatePre)(self.number, a.state); }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.load_state_pre)(self.number, a.state);
+            }
         }
         for a in self.adresses.clone().to_vec().into_iter() {
             a.restore();
         }
-        for a in self.extraStates.into_iter() {
-            unsafe { (a.cb.loadStatePost)(a.state); }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.load_state_post)(a.state);
+            }
         }
     }
 }

@@ -53,13 +53,13 @@ const ISDEBUG: bool = false;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Callbacks {
-    pub saveState: unsafe extern "C" fn() -> u32,
-    pub loadStatePre: unsafe extern "C" fn(usize, u32),
-    pub loadStatePost: unsafe extern "C" fn(u32),
-    pub freeState: unsafe extern "C" fn(u32)
+    pub save_state: unsafe extern "C" fn() -> u32,
+    pub load_state_pre: unsafe extern "C" fn(usize, u32),
+    pub load_state_post: unsafe extern "C" fn(u32),
+    pub free_state: unsafe extern "C" fn(u32, bool),
 }
 
-static mut callbackArray: Vec<Callbacks> = Vec::new();
+static mut CALLBACK_ARRAY: Vec<Callbacks> = Vec::new();
 
 //#[cfg(not(debug_assertions))]
 //const ISDEBUG: bool = false;
@@ -118,7 +118,7 @@ pub extern "C" fn getPriority() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
-    callbackArray.push(*cb);
+    CALLBACK_ARRAY.push(*cb);
 }
 
 #[no_mangle]
