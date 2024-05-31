@@ -36,6 +36,16 @@ If the injector closes abruptly, contact me about it.
 In replay mode pressing `q` will start rewinding, using keys that modify playback speed (A/S/D) will affect the rewind speed.  
 You can also pause the replay by pressing `z`. When the replay is paused this way you can move frame by frame, backwards or forwards, by using `s` and `d`
 
+## Use with [Tsk](https://wikiwiki.jp/thtools/%E5%A4%A9%E5%89%87%E8%A6%B3)
+
+When used with Giuroll, Tsk may record one battle multiple times. A workaround is provided for it:
+
+To apply the workaround, `SWRSAddr.ini` of tsk should be edited: delete the original line which starts with `SWRS_ADDR_PBATTLEMGR`, or make it a comment by add a semicolon `;` at the beginning of it, and then add the following line (also on the `SWRSAddress` section):
+
+``` ini
+SWRS_ADDR_PBATTLEMGR = 0x0047579c
+```
+
 ## Building from source
 
 Mod can be buit with `cargo` using the `nightly-i686-pc-windows-msvc` toolchain.  

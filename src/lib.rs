@@ -322,6 +322,59 @@ static mut ENABLE_CHECK_MODE: bool = false;
 
 static mut DISABLE_SOUND: bool = false;
 
+#[repr(C)]
+struct FakeBattleManagerForTsk {
+    fake_left_win_count: u8,  // SWRS_ADDR_WINCNTOFS = 0x573
+    fake_right_win_count: u8, // SWRS_ADDR_WINCNTOFS = 0x573
+    _unused1: [u8; 0xa],
+    fake_p_left_char: *mut u8,  // SWRS_ADDR_LCHAROFS = 0xC
+    fake_p_right_char: *mut u8, // SWRS_ADDR_RCHAROFS = 0x10
+    _unused2: [u8; 0x74],
+    fake_battle_mode: u32, // SWRS_ADDR_BTLMODEOFS = 0x88
+}
+// SWRS_ADDR_PBATTLEMGR = 0x0047579c
+const P_FAKE_BATTLE_MANAGER_FOR_TSK: *mut *mut FakeBattleManagerForTsk = 0x47579c as _;
+static mut FAKE_BATTLE_MANAGER_FOR_TSK: Option<Box<FakeBattleManagerForTsk>> = None;
+
+impl FakeBattleManagerForTsk {
+    fn new_box() -> Box<Self> {
+        let mut self_ = Box::new(Self {
+            fake_battle_mode: 0,
+            fake_p_left_char: 0 as *mut u8,
+            fake_p_right_char: 0 as *mut u8,
+            fake_left_win_count: 0,
+            fake_right_win_count: 0,
+            _unused1: [0; 0xa],
+            _unused2: [0; 0x74],
+        });
+        self_.fake_p_left_char =
+            (addr_of_mut!(self_.fake_left_win_count) as usize).wrapping_sub(0x573) as _;
+        self_.fake_p_right_char =
+            (addr_of_mut!(self_.fake_right_win_count) as usize).wrapping_sub(0x573) as _;
+        assert_eq!(
+            self_.fake_p_left_char.wrapping_add(0x573),
+            addr_of_mut!(self_.fake_left_win_count)
+        );
+        assert_eq!(
+            self_.fake_p_right_char.wrapping_add(0x573),
+            addr_of_mut!(self_.fake_right_win_count)
+        );
+        assert_eq!(
+            ((self_.as_ref() as *const _) as *const *mut u8).wrapping_byte_offset(0xc),
+            addr_of_mut!(self_.fake_p_left_char)
+        );
+        assert_eq!(
+            ((self_.as_ref() as *const _) as *const *mut u8).wrapping_byte_offset(0x10),
+            addr_of_mut!(self_.fake_p_right_char)
+        );
+        assert_eq!(
+            ((self_.as_ref() as *const _) as *const u32).wrapping_byte_offset(0x88),
+            addr_of_mut!(self_.fake_battle_mode)
+        );
+        self_
+    }
+}
+
 pub fn force_sound_skip(soundid: usize) {
     unsafe {
         let forcesound = std::mem::transmute::<usize, extern "stdcall" fn(u32)>(0x401d50);
@@ -556,6 +609,14 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         FREEZE_MITIGATION = freeze_mitigation;
         ENABLE_PRINTLN = enable_println;
         ENABLE_CHECK_MODE = enable_check_mode;
+    }
+
+    unsafe {
+        FAKE_BATTLE_MANAGER_FOR_TSK = Some(FakeBattleManagerForTsk::new_box());
+        tamper_memory(
+            P_FAKE_BATTLE_MANAGER_FOR_TSK,
+            (FAKE_BATTLE_MANAGER_FOR_TSK.as_mut().unwrap().as_mut() as *mut FakeBattleManagerForTsk),
+        );
     }
 
     unsafe {
@@ -2130,6 +2191,12 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
             // todo: detect v player
             if framecount > 5 {
                 REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
+            } else {
+                if let Some(fake_battle_manager) = FAKE_BATTLE_MANAGER_FOR_TSK.as_mut() {
+                    fake_battle_manager.fake_left_win_count = 0;
+                    fake_battle_manager.fake_right_win_count = 0;
+                    fake_battle_manager.fake_battle_mode = *battle_state;
+                }
             }
 
             if !GIRLSTALKED {
@@ -2154,6 +2221,16 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         }
     } else {
         //IS_KO = false;
+    }
+
+    let battle_manaer = (*a).esi as *const *const u8;
+    if *battle_state == 5
+        && *state_sub_count >= 6 // ensure it is a KO without rollbacks that may change the result
+        && let Some(fake_battle_manager) = FAKE_BATTLE_MANAGER_FOR_TSK.as_mut()
+    {
+        fake_battle_manager.fake_left_win_count = *(*battle_manaer.offset(3)).offset(0x573);
+        fake_battle_manager.fake_right_win_count = *(*battle_manaer.offset(4)).offset(0x573);
+        fake_battle_manager.fake_battle_mode = 5;
     }
     (*a).ebx = cur_speed;
     (*a).edi = cur_speed_iter;
