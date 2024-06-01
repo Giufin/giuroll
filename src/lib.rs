@@ -55,6 +55,18 @@ use windows::{
 
 //#[cfg(debug_assertions)]
 const ISDEBUG: bool = false;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Callbacks {
+    pub save_state: unsafe extern "C" fn() -> u32,
+    pub load_state_pre: unsafe extern "C" fn(usize, u32),
+    pub load_state_post: unsafe extern "C" fn(u32),
+    pub free_state: unsafe extern "C" fn(u32, bool),
+}
+
+static mut CALLBACK_ARRAY: Vec<Callbacks> = Vec::new();
+
 //#[cfg(not(debug_assertions))]
 //const ISDEBUG: bool = false;
 #[cfg(feature = "logtofile")]
@@ -229,6 +241,16 @@ pub unsafe extern "C" fn better_exe_init() -> bool {
     truer_exec(PathBuf::from(os))
         .or_else(|| truer_exec(std::env::current_dir().unwrap()))
         .is_some()
+}
+
+#[no_mangle]
+pub extern "C" fn getPriority() -> i32 {
+    1000
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
+    CALLBACK_ARRAY.push(*cb);
 }
 
 #[no_mangle]

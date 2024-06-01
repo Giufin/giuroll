@@ -10,8 +10,8 @@ use std::{
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
 
 use crate::{
-    println, ptr_wrap, set_input_buffer, ISDEBUG, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE,
-    SOKU_FRAMECOUNT, SOUND_MANAGER,
+    println, ptr_wrap, set_input_buffer, Callbacks, CALLBACK_ARRAY, ISDEBUG, MEMORY_RECEIVER_ALLOC,
+    MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];
@@ -847,12 +847,21 @@ pub unsafe fn dump_frame() -> Frame {
     // For F1, F5, F6 and F7
     m.push(read_addr(*(0x008971c8 as *mut usize) + 4, 8));
 
+    let mut extra_states: Vec<ExtraState> = Vec::new();
+
+    for cb in CALLBACK_ARRAY.iter() {
+        let i = (cb.save_state)();
+
+        extra_states.push(ExtraState { cb: *cb, state: i })
+    }
+
     Frame {
         number: *SOKU_FRAMECOUNT,
         adresses: m.into_boxed_slice(),
         fp: w,
         frees: vec![],
         allocs: vec![],
+        extra_states,
         weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
             & 0xFF) as u8,
     }
@@ -1171,6 +1180,12 @@ fn get_ptr(from: &[u8], offset: usize) -> usize {
     usize::from_le_bytes(from[offset..offset + 4].try_into().unwrap())
 }
 
+#[derive(Debug, Clone)]
+struct ExtraState {
+    cb: Callbacks,
+    state: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub number: usize,
@@ -1178,6 +1193,7 @@ pub struct Frame {
     pub fp: [u8; 108],
     pub frees: Vec<usize>,
     pub allocs: Vec<usize>,
+    pub extra_states: Vec<ExtraState>,
 
     pub weather_sync_check: u8,
 }
@@ -1203,6 +1219,11 @@ impl Frame {
         // for a in allocs.difference(&frees) {
         //     //println!("never freed: {}", a);
         // }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.free_state)(a.state, true);
+            }
+        }
         (allocs, frees)
     }
 
@@ -1219,7 +1240,11 @@ impl Frame {
                 unsafe { HeapFree(heap, 0, *a as *const c_void) };
             }
         }
-        // self.frees = Vec::new();
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.free_state)(a.state, false);
+            }
+        }
     }
 
     fn size_data(&self) -> String {
@@ -1254,8 +1279,18 @@ impl Frame {
 
         // println!("restore {}", self.number);
 
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.load_state_pre)(self.number, a.state);
+            }
+        }
         for a in self.adresses.iter() {
             a.restore();
+        }
+        for a in self.extra_states.iter() {
+            unsafe {
+                (a.cb.load_state_post)(a.state);
+            }
         }
     }
 }
