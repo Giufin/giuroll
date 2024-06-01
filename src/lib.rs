@@ -638,7 +638,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         FAKE_BATTLE_MANAGER_FOR_TSK = Some(FakeBattleManagerForTsk::new_box());
         tamper_memory(
             P_FAKE_BATTLE_MANAGER_FOR_TSK,
-            (FAKE_BATTLE_MANAGER_FOR_TSK.as_mut().unwrap().as_mut() as *mut FakeBattleManagerForTsk),
+            (FAKE_BATTLE_MANAGER_FOR_TSK.as_mut().unwrap().as_mut()
+                as *mut FakeBattleManagerForTsk),
         );
     }
 
@@ -2248,7 +2249,8 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
 
     let battle_manaer = (*a).esi as *const *const u8;
     if *battle_state == 5
-        && *state_sub_count >= 6 // ensure it is a KO without rollbacks that may change the result
+        && let Some(netcode) = NETCODER.as_ref()
+        && *state_sub_count as usize >= netcode.max_rollback  // ensure KO with confirmed battle result
         && let Some(fake_battle_manager) = FAKE_BATTLE_MANAGER_FOR_TSK.as_mut()
     {
         fake_battle_manager.fake_left_win_count = *(*battle_manaer.offset(3)).offset(0x573);
