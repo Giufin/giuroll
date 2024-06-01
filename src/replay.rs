@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    io::Write,
     os::raw::c_void,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
@@ -378,6 +379,7 @@ impl CheckData {
 pub struct Check {
     check_step: CheckStep,
     check_data: Vec<CheckData>,
+    is_failed: bool,
 }
 static mut ALLOCS: Option<HashSet<usize>> = None;
 static mut FREES: Option<HashSet<usize>> = None;
@@ -403,7 +405,9 @@ pub unsafe fn handle_replay(
             CHECK = Some(Check {
                 check_step: CheckStep::TestPlay1,
                 check_data: Vec::new(),
+                is_failed: false,
             });
+            PAUSESTATE.store(0, Relaxed);
             AllocConsole();
         } else {
             DISABLE_SOUND = false;
@@ -530,7 +534,7 @@ pub unsafe fn handle_replay(
 
     resume(battle_state);
 
-    if let Some(check) = &mut CHECK {
+    if let Some(check) = CHECK.as_mut() {
         unsafe fn check_failed() {
             println!(
                 "Check doesn't pass! Failed at frame {}. Now paused there",
@@ -543,6 +547,34 @@ pub unsafe fn handle_replay(
                 .unwrap()
                 .retain(|x| x.number != 0xffffffff && x.number >= 5);
         }
+        let mut check_different_frame = |old: &CheckData, new: &CheckData| -> bool {
+            if *old != *new {
+                check.is_failed = true;
+                println!("Difference at frame {} is determined.", *SOKU_FRAMECOUNT);
+                println!("old: {:?}", old);
+                println!("new: {:?}", new);
+                println!("Continue or not? (Y or N, default N.)");
+                print!("> ");
+                let _ = std::io::stdout().flush();
+                loop {
+                    let mut buf = String::new();
+                    std::io::stdin()
+                        .read_line(&mut buf)
+                        .expect("Warning: can't read stdin");
+                    match buf.as_str().trim() {
+                        "y" | "Y" => {
+                            println!("Continue...");
+                            return false;
+                        }
+                        "n" | "N" | _ => {
+                            println!("The test has been failed.");
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        };
         let ori_is_replay_over: unsafe extern "fastcall" fn(u32) -> bool =
             unsafe { std::mem::transmute(0x00480860) };
         let is_over = ori_is_replay_over(0x898718) || *battle_state == 5;
@@ -587,8 +619,10 @@ pub unsafe fn handle_replay(
                         *SOKU_FRAMECOUNT
                     );
                     check_failed();
-                } else if check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle() {
-                    println!("Step 2 has different at frame {}.", *SOKU_FRAMECOUNT);
+                } else if check_different_frame(
+                    &check.check_data[*SOKU_FRAMECOUNT],
+                    &CheckData::from_battle(),
+                ) {
                     check_failed();
                 } else if is_over {
                     if *SOKU_FRAMECOUNT + 1 < check.check_data.len() {
@@ -667,9 +701,11 @@ pub unsafe fn handle_replay(
                 // println!("{}", *SOKU_FRAMECOUNT);
                 if stepping
                     && *SOKU_FRAMECOUNT < check.check_data.len()
-                    && check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle()
+                    && check_different_frame(
+                        &check.check_data[*SOKU_FRAMECOUNT],
+                        &CheckData::from_battle(),
+                    )
                 {
-                    println!("Step 3 has different at frame {}.", being_tested_frame);
                     check_failed();
                 } else if stepping && *SOKU_FRAMECOUNT + 1 < check.check_data.len() && is_over {
                     println!("Step 3 ends too early at frame {}.", being_tested_frame);
@@ -684,7 +720,13 @@ pub unsafe fn handle_replay(
                         );
                         check_failed();
                     } else if being_tested_frame_ + 1 == check.check_data.len() {
-                        println!("All tests passed!");
+                        println!(
+                            "Tests are complete! {}",
+                            match check.is_failed {
+                                false => "All tests pass!",
+                                true => "At least a test was failed.",
+                            }
+                        );
                         PAUSESTATE.store(1, Relaxed);
                         FRAMES
                             .lock()
@@ -702,7 +744,7 @@ pub unsafe fn handle_replay(
                                     assert_eq!(map.len(), *SOKU_FRAMECOUNT - 1);
                                     let i = map.len() - cur_rollback as usize;
                                     assert_eq!(i, being_tested_frame_ - 1);
-                                    let mut cur_frame = map.get_mut(i).unwrap();
+                                    let cur_frame = map.get_mut(i).unwrap();
                                     assert_eq!(cur_frame.number, being_tested_frame_);
                                     // let mut cur_frame = map.get_mut(i).unwrap();
                                     // println!("did_happen frame {} >>>", old_frame.number);
