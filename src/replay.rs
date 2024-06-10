@@ -9,12 +9,10 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    error::Error,
     io::Write,
     os::raw::c_void,
-    sync::{
-        atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
-        Mutex,
-    },
+    sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
     u32,
 };
 use winapi::shared::{
@@ -78,7 +76,7 @@ impl RePlayRePlay {
 
 static mut RE_PLAY_PAUSE: usize = 0;
 
-static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+static mut FRAMES: Vec<Frame> = Vec::new();
 static mut RE_PLAY: Option<RePlayRePlay> = None;
 
 static PAUSESTATE: AtomicU8 = AtomicU8::new(0);
@@ -210,7 +208,7 @@ pub unsafe extern "cdecl" fn is_replay_over(
 }
 
 pub unsafe fn clean_replay_statics() {
-    for a in std::mem::replace(&mut *FRAMES.lock().unwrap(), vec![]) {
+    for a in std::mem::replace(&mut FRAMES, vec![]) {
         a.did_happen();
     }
     if let Some(frees) = FREES.take() {
@@ -542,10 +540,7 @@ pub unsafe fn handle_replay(
             );
             CHECK = None;
             PAUSESTATE.store(1, Relaxed);
-            FRAMES
-                .lock()
-                .unwrap()
-                .retain(|x| x.number != 0xffffffff && x.number >= 5);
+            FRAMES.retain(|x| x.number != 0xffffffff && x.number >= 5);
         }
         let mut check_different_frame = |old: &CheckData, new: &CheckData| -> bool {
             if *old != *new {
@@ -558,16 +553,19 @@ pub unsafe fn handle_replay(
                 let _ = std::io::stdout().flush();
                 loop {
                     let mut buf = String::new();
-                    std::io::stdin()
-                        .read_line(&mut buf)
-                        .expect("Warning: can't read stdin");
-                    match buf.as_str().trim() {
-                        "y" | "Y" => {
-                            println!("Continue...");
-                            return false;
-                        }
-                        "n" | "N" | _ => {
-                            println!("The test has been failed.");
+                    match std::io::stdin().read_line(&mut buf) {
+                        Ok(_) => match buf.as_str().trim() {
+                            "y" | "Y" => {
+                                println!("Continue...");
+                                return false;
+                            }
+                            "n" | "N" | _ => {
+                                println!("The test has been failed.");
+                                return true;
+                            }
+                        },
+                        Err(e) => {
+                            println!("Warning: can't read stdin: {}", e.to_string());
                             return true;
                         }
                     }
@@ -604,7 +602,7 @@ pub unsafe fn handle_replay(
                 if is_over {
                     override_target_frame = Some(1);
                     check.check_step = CheckStep::TestPlay2;
-                    FRAMES.lock().unwrap().push(dump_frame());
+                    FRAMES.push(dump_frame());
                     println!("Step 1 got {} frames.", check.check_data.len());
                     println!("Start step 2: rollbacking to the beginning and replaying the replay.")
                 } else {
@@ -728,10 +726,7 @@ pub unsafe fn handle_replay(
                             }
                         );
                         PAUSESTATE.store(1, Relaxed);
-                        FRAMES
-                            .lock()
-                            .unwrap()
-                            .retain(|x| x.number != 0xffffffff && x.number >= 5);
+                        FRAMES.retain(|x| x.number != 0xffffffff && x.number >= 5);
                         CHECK = None;
                     } else {
                         let (new_tested_frame, tested_rollback, step) =
@@ -740,20 +735,20 @@ pub unsafe fn handle_replay(
                                 (false, true) => (being_tested_frame, cur_rollback + 1, false),
                                 (true, true) => {
                                     // println!("clear frame {}", being_tested_frame);
-                                    let mut map = FRAMES.lock().unwrap();
-                                    assert_eq!(map.len(), *SOKU_FRAMECOUNT - 1);
-                                    let i = map.len() - cur_rollback as usize;
+                                    assert_eq!(FRAMES.len(), *SOKU_FRAMECOUNT - 1);
+                                    let i = FRAMES.len() - cur_rollback as usize;
                                     assert_eq!(i, being_tested_frame_ - 1);
-                                    let cur_frame = map.get_mut(i).unwrap();
+                                    let cur_frame = FRAMES.get_mut(i).unwrap();
                                     assert_eq!(cur_frame.number, being_tested_frame_);
-                                    // let mut cur_frame = map.get_mut(i).unwrap();
+                                    // let mut cur_frame = FRAMES.get_mut(i).unwrap();
                                     // println!("did_happen frame {} >>>", old_frame.number);
                                     cur_frame.did_happen();
                                     // println!("did_happen frame {} <<<", old_frame.number);
                                     // if i >= 3 && i % 16 != 0 {
                                     cur_frame.allocs = Vec::new();
                                     cur_frame.frees = Vec::new();
-                                    cur_frame.adresses = Vec::new().into_boxed_slice();
+                                    cur_frame.addresses = Box::new([]);
+                                    cur_frame.addresses_buf = Box::new([]);
                                     cur_frame.number = 0xffffffff;
                                     // }
                                     if being_tested_frame % 300 == 0 {
@@ -881,13 +876,10 @@ pub unsafe fn handle_replay(
 
             // println!("target {}", target);
 
-            let mutex = FRAMES.lock().unwrap();
-            let mut map = mutex;
-            let frames = &mut *map;
             let mut last: Option<Frame> = None;
             let (mut allocs, mut frees) = (HashSet::<usize>::new(), HashSet::<usize>::new());
             loop {
-                let candidate = frames.last_mut();
+                let candidate = FRAMES.last_mut();
                 if let Some(x) = candidate {
                     if let Some(x) = last.take() {
                         // println!("never_happen frame {} >>>", x.number);
@@ -959,7 +951,7 @@ pub unsafe fn handle_replay(
                         }
                         break;
                     } else {
-                        last = Some(frames.pop().unwrap());
+                        last = Some(FRAMES.pop().unwrap());
                         if last.as_ref().unwrap().number == 0xffffffff {
                             println!("WARNING: invalid frame!");
                         }
@@ -972,7 +964,7 @@ pub unsafe fn handle_replay(
                     if let Some(last) = last.take() {
                         // it can happen when rewind to frame 1
                         last.restore();
-                        frames.push(last);
+                        FRAMES.push(last);
                     }
                     pause(battle_state, weird_counter);
                     *cur_speed_iter = *cur_speed;
@@ -1007,10 +999,9 @@ pub unsafe fn handle_replay(
             _ => false,
         }
     {
-        let mut mutex = FRAMES.lock().unwrap();
         if framecount == 0 {
             println!("try to save frame 0! stop it!");
-        } else if mutex.is_empty() || mutex.last().unwrap().number != *SOKU_FRAMECOUNT {
+        } else if FRAMES.is_empty() || FRAMES.last().unwrap().number != *SOKU_FRAMECOUNT {
             let mut x = dump_frame();
             x.allocs = ALLOCS
                 .replace(HashSet::new())
@@ -1020,7 +1011,7 @@ pub unsafe fn handle_replay(
             x.frees = FREES.replace(HashSet::new()).unwrap().into_iter().collect();
             // x.allocs.unwrap().retain(|x| !allocs.unwrap().contains(x));
             // println!("push {}", x.number);
-            mutex.push(x);
+            FRAMES.push(x);
         }
     } else {
         // println!("cannot push?");
