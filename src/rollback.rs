@@ -5,6 +5,8 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     ffi::c_void,
     hash::RandomState,
+    ops::Deref,
+    ptr::null_mut,
     time::Duration,
 };
 
@@ -277,7 +279,7 @@ impl Rollbacker {
                     manager.pop_sounds_since(fr.prev_state.number, self.current);
                 }
                 self.rolling_back = true;
-                fr.prev_state.clone().restore();
+                fr.prev_state.restore();
                 //fr.prev_state.clone().never_happened();
                 fr.prev_state.frees.clear();
                 fr.prev_state.allocs.clear();
@@ -299,6 +301,8 @@ pub struct RollFrame {
     pub player_input: RInput,
     pub enemy_input: RInput,
 }
+
+pub static mut LAST_M_LEN: usize = 0;
 
 impl RollFrame {
     fn dump_with_guess(player_input: RInput, guess: RInput) -> Self {
@@ -330,7 +334,8 @@ pub unsafe fn dump_frame() -> Frame {
     };
     // println!("dump {}", *SOKU_FRAMECOUNT);
 
-    let mut m = vec![];
+    // guess the length to avoid reallocation as far as possible
+    let mut m: Vec<ReadAddr> = Vec::with_capacity(LAST_M_LEN.next_power_of_two());
 
     #[cfg(feature = "logtofile")]
     if ISDEBUG {
@@ -358,22 +363,17 @@ pub unsafe fn dump_frame() -> Frame {
     {
         let t = read_linked_list(first + 0x78);
 
-        m.extend(t.read_all(0).to_vec().into_iter());
+        m.extend(t.read_all(0));
     }
 
     {
         let t = read_linked_list(first + 0xa4);
 
-        m.extend(t.read_all(0x180).to_vec().into_iter());
+        m.extend(t.read_all(0x180));
     }
 
     {
-        m.extend(
-            read_maybe_ring_buffer(first + 0x28)
-                .read_whole(0x10)
-                .to_vec()
-                .into_iter(),
-        );
+        m.extend(read_maybe_ring_buffer(first + 0x28).read_whole(0x10));
     }
     #[cfg(feature = "logtofile")]
     //0x8985e0
@@ -384,18 +384,13 @@ pub unsafe fn dump_frame() -> Frame {
     let first = get_ptr(&ptr1.content[0..4], 0);
     m.push(read_addr(first, 0x118));
 
-    m.extend(
-        read_linked_list(first + 0x4)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x4).read_all(0));
 
     let llautosize = read_linked_list(first + 0x2c);
-    m.push(llautosize.clone().to_addr());
     m.push(read_addr(first + 0x2c + 0xc, 4));
 
-    let mut lit = llautosize.read_underlying().to_vec().into_iter();
+    let mut lit = llautosize.read_underlying();
+    m.push(llautosize.to_addr());
     m.push(lit.next().unwrap().to_addr());
 
     for a in lit {
@@ -407,16 +402,11 @@ pub unsafe fn dump_frame() -> Frame {
             };
 
             m.push(read_addr(p, size));
-            m.push(a.clone().to_addr());
+            m.push(a.to_addr());
         }
     }
 
-    m.extend(
-        read_linked_list(first + 0x38)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x38).read_all(0));
 
     #[cfg(feature = "logtofile")]
     //0x8985f0
@@ -437,21 +427,15 @@ pub unsafe fn dump_frame() -> Frame {
     if ISDEBUG {
         info!("0x8985f02")
     };
-    m.extend(
-        read_linked_list(first + 0x30)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x30).read_all(0));
 
     #[cfg(feature = "logtofile")]
     if ISDEBUG {
         info!("0x8985f03")
     };
 
-    let effect_linked_list = read_linked_list(first + 0x5c).read_all(0x178).to_vec();
-
-    m.extend(effect_linked_list.into_iter());
+    // effect_linked_list
+    m.extend(read_linked_list(first + 0x5c).read_all(0x178));
 
     #[cfg(feature = "logtofile")]
     //0x8985e8
@@ -494,19 +478,9 @@ pub unsafe fn dump_frame() -> Frame {
     m.push(read_vec(first + 0x14).read_underlying());
     m.push(read_vec(first + 0x24).read_underlying());
 
-    m.extend(
-        read_linked_list(first + 0x34)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x34).read_all(0));
 
-    m.extend(
-        read_linked_list(first + 0x60)
-            .read_all(0x178)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x60).read_all(0x178));
 
     read_weird_structure(&mut m, first + 0x18c, 0xc);
     read_weird_structure(&mut m, first + 0x1c0, 0xc);
@@ -520,42 +494,12 @@ pub unsafe fn dump_frame() -> Frame {
     let ptr1 = read_addr(0x8985e4, 0x4);
     let first = get_ptr(&ptr1.content[0..4], 0);
     m.push(read_addr(first, 0x908));
-    m.extend(
-        read_linked_list(first + 0x30)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
-    m.extend(
-        read_linked_list(first + 0x3c)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
-    m.extend(
-        read_linked_list(first + 0x48)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
-    m.extend(
-        read_linked_list(first + 0x54)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
-    m.extend(
-        read_linked_list(first + 0x60)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
-    m.extend(
-        read_linked_list(first + 0x6c)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0x30).read_all(0));
+    m.extend(read_linked_list(first + 0x3c).read_all(0));
+    m.extend(read_linked_list(first + 0x48).read_all(0));
+    m.extend(read_linked_list(first + 0x54).read_all(0));
+    m.extend(read_linked_list(first + 0x60).read_all(0));
+    m.extend(read_linked_list(first + 0x6c).read_all(0));
 
     {
         let w = read_vec(first + 0x9c);
@@ -573,19 +517,9 @@ pub unsafe fn dump_frame() -> Frame {
             info!("battle+xac wasn't 0");
         }
     }
-    m.extend(
-        read_linked_list(first + 0xbc)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0xbc).read_all(0));
 
-    m.extend(
-        read_linked_list(first + 0xe8)
-            .read_all(0)
-            .to_vec()
-            .into_iter(),
-    );
+    m.extend(read_linked_list(first + 0xe8).read_all(0));
 
     //0x8985dc
     if ISDEBUG {
@@ -624,29 +558,28 @@ pub unsafe fn dump_frame() -> Frame {
         let read_bullets = |pos: usize, char: u8, m: &mut Vec<_>| {
             let list = read_linked_list(pos);
 
-            m.extend(list.clone().read_all(0).to_vec().into_iter());
+            m.extend(list.read_all(0));
 
             let und = list.read_underlying();
 
-            for a in und.iter().skip(1) {
-                m.push(a.clone().to_addr());
+            for a in und.skip(1) {
+                m.push(a.to_addr());
                 let d = a.additional_data;
                 if d != 0 {
                     let z = CHARSIZEDATA[char as usize % CHARSIZEDATA.len()].1;
                     let bullet = read_addr(d, z);
-                    m.push(bullet.clone());
                     let p1 = get_ptr(&bullet.content, 0x3a4);
 
                     if p1 != 0 {
                         let ll = read_linked_list(d + 0x3a4);
 
-                        m.extend(ll.read_all(0).to_vec().into_iter());
+                        m.extend(ll.read_all(0));
                     }
 
                     let p1 = get_ptr(&bullet.content, 0x17c);
                     if p1 != 0 {
                         let ll = read_linked_list(d + 0x17c);
-                        m.extend(ll.read_all(0).to_vec().into_iter());
+                        m.extend(ll.read_all(0));
                     }
 
                     let p3 = get_ptr(&bullet.content, 0x35c);
@@ -663,15 +596,14 @@ pub unsafe fn dump_frame() -> Frame {
                     }
 
                     let p4 = get_ptr(&bullet.content, 0x354);
+                    m.push(bullet);
                     if p4 != 0 {
                         let nd = read_addr(p4, 0x54);
-                        m.push(nd.clone());
 
                         let size = usize::from_le_bytes(nd.content[0x30..0x34].try_into().unwrap());
                         let ptr = usize::from_le_bytes(nd.content[0x2c..0x30].try_into().unwrap());
 
                         let n2 = read_addr(ptr, size * 4);
-                        m.push(n2.clone());
 
                         for a in 0..size {
                             let p = get_ptr(&n2.content, a * 4);
@@ -682,9 +614,9 @@ pub unsafe fn dump_frame() -> Frame {
 
                         let size = usize::from_le_bytes(nd.content[0x44..0x48].try_into().unwrap());
                         let ptr = usize::from_le_bytes(nd.content[0x40..0x44].try_into().unwrap());
+                        m.push(n2);
 
                         let n2 = read_addr(ptr, size * 4);
-                        m.push(n2.clone());
 
                         for a in 0..size {
                             let p = get_ptr(&n2.content, a * 4);
@@ -699,6 +631,8 @@ pub unsafe fn dump_frame() -> Frame {
                             + 2;
 
                         let ptr = usize::from_le_bytes(nd.content[0x50..0x54].try_into().unwrap());
+                        m.push(n2);
+                        m.push(nd);
 
                         m.push(read_addr(ptr, size));
                     }
@@ -711,7 +645,6 @@ pub unsafe fn dump_frame() -> Frame {
         let char = *(char as *const u8);
 
         let cdat = read_addr(old, CHARSIZEDATA[char as usize % CHARSIZEDATA.len()].0);
-        m.push(cdat.clone());
 
         let bullets = old + 0x17c;
         read_bullets(bullets, char, m);
@@ -721,20 +654,19 @@ pub unsafe fn dump_frame() -> Frame {
             read_weird_structure(m, old + 0x8bc, 0x2c);
         }
 
-        let mut z = vec![];
         let ll = read_linked_list(old + 0x718);
 
-        z.push(read_addr(ll.ll4, 0xf4));
+        m.push(read_addr(ll.ll4, 0xf4));
 
         for _ in 0..ll.listcount {
-            let zcop = z.last().unwrap();
+            let zcop = m.last().unwrap();
             let ptr = get_ptr(&zcop.content, 0);
-            z.push(read_addr(ptr, 0xf4));
+            m.push(read_addr(ptr, 0xf4));
         }
 
-        m.extend(z.into_iter());
-
         let new = get_ptr(&cdat.content, 0x6f8);
+        m.push(cdat);
+
         m.push(read_addr(new, 0x68));
 
         let p4 = read_vec(new + 0x10);
@@ -755,7 +687,7 @@ pub unsafe fn dump_frame() -> Frame {
             }
         }
 
-        m.push(w.clone());
+        m.push(w);
 
         m.push(p4.to_addr());
 
@@ -764,21 +696,21 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(p5.to_addr());
 
         let p6 = read_linked_list(new + 0x30);
-        m.extend(p6.read_all(0).to_vec().into_iter());
+        m.extend(p6.read_all(0));
 
         read_bullets(new + 0x5c, char, m);
 
         let p8 = read_maybe_ring_buffer(old + 0x7b0);
-        m.extend(p8.read_whole(0x10).to_vec().into_iter());
+        m.extend(p8.read_whole(0x10));
 
         let p9 = read_maybe_ring_buffer(old + 0x5e8);
-        m.extend(p9.read_whole(0x98).to_vec().into_iter());
+        m.extend(p9.read_whole(0x98));
 
         let p10 = read_maybe_ring_buffer(old + 0x5b0);
-        m.extend(p10.read_whole(0x10).to_vec().into_iter());
+        m.extend(p10.read_whole(0x10));
 
         let p11 = read_maybe_ring_buffer(old + 0x5fc);
-        m.extend(p11.read_whole(0x10).to_vec().into_iter());
+        m.extend(p11.read_whole(0x10));
     };
 
     let i3 = read_addr(0x8985e4, 4);
@@ -826,7 +758,7 @@ pub unsafe fn dump_frame() -> Frame {
         }
     }
 
-    let to_be_read = vec![
+    let to_be_read = [
         (0x898600, 0x6c),
         (0x8985d8, 4),
         (0x8985d4, 4),
@@ -854,7 +786,7 @@ pub unsafe fn dump_frame() -> Frame {
     // For F1, F5, F6 and F7
     m.push(read_addr(*(0x008971c8 as *mut usize) + 4, 8));
 
-    let mut extra_states: Vec<ExtraState> = Vec::new();
+    let mut extra_states: Vec<ExtraState> = Vec::with_capacity(CALLBACK_ARRAY.len());
 
     for cb in CALLBACK_ARRAY.iter() {
         let i = (cb.save_state)();
@@ -862,9 +794,25 @@ pub unsafe fn dump_frame() -> Frame {
         extra_states.push(ExtraState { cb: *cb, state: i })
     }
 
+    // aligned to 4
+    let buf_size: usize = m
+        .iter()
+        .map(|x| x.content.metadata.size.div_ceil(4) * 4)
+        .sum();
+
+    let mut buf = Vec::with_capacity(buf_size);
+    for addr in &m {
+        buf.extend_from_slice(&addr.content);
+        buf.resize(buf.len().div_ceil(4) * 4, 0);
+    }
+    assert_eq!(buf_size, buf.len());
+
+    LAST_M_LEN = m.len();
+
     let f = Frame {
         number: *SOKU_FRAMECOUNT,
-        adresses: m.into_boxed_slice(),
+        addresses: m.into_iter().map(|x| x.content.metadata).collect(),
+        addresses_buf: buf.into_boxed_slice(),
         fp: w,
         frees: vec![],
         allocs: vec![],
@@ -890,32 +838,51 @@ fn read_heap(pos: usize) -> usize {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ReadAddr {
-    pub pos: usize,
-    pub content: Box<[u8]>,
+#[derive(Debug)]
+pub struct ReadAddrMetadata {
+    size: usize,
+    pos: *mut u8,
+}
+
+unsafe impl Send for ReadAddrMetadata {}
+
+#[derive(Debug)]
+struct ReadAddrContent {
+    pub metadata: ReadAddrMetadata,
+}
+
+#[derive(Debug)]
+struct ReadAddr {
+    pub content: ReadAddrContent,
+}
+
+impl Deref for ReadAddrContent {
+    type Target = [u8];
+
+    fn deref<'a>(&'a self) -> &'a Self::Target {
+        unsafe { std::slice::from_raw_parts(self.metadata.pos, self.metadata.size) }
+    }
 }
 
 impl ReadAddr {
-    fn usize_align(&self) -> Box<[usize]> {
-        self.content
-            .chunks(4)
-            .map(|x| usize::from_le_bytes(x.try_into().unwrap()))
-            .collect()
+    fn usize_align<'a>(&'a self) -> &'a [usize] {
+        unsafe { self.usize_align_() }
     }
 
-    pub fn restore(&self) {
-        if self.pos == 0 || self.content.len() == 0 {
-            return;
+    unsafe fn usize_align_<'a>(&self) -> &'a [usize] {
+        // Soku2 <= v2.30f only unaligned on stack. So it should be ok.
+        assert!((self.content.metadata.pos as *const usize).is_aligned());
+        assert_eq!(self.content.metadata.size % 4, 0);
+        unsafe {
+            std::slice::from_raw_parts(
+                self.content.metadata.pos as *const usize,
+                self.content.metadata.size / 4,
+            )
         }
-
-        let slice =
-            unsafe { std::slice::from_raw_parts_mut(self.pos as *mut u8, self.content.len()) };
-        slice.copy_from_slice(&self.content);
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct VecAddr {
     pub pos: usize,
     pub start: usize,
@@ -923,7 +890,7 @@ struct VecAddr {
     pub end: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LL4 {
     pub pos: usize,
     pub next: usize,
@@ -932,17 +899,8 @@ struct LL4 {
 }
 
 impl LL4 {
-    fn to_addr(self) -> ReadAddr {
-        ReadAddr {
-            pos: self.pos,
-            content: [
-                self.next.to_le_bytes(),
-                self.field2.to_le_bytes(),
-                self.additional_data.to_le_bytes(),
-            ]
-            .concat()
-            .into_boxed_slice(),
-        }
+    fn to_addr(&self) -> ReadAddr {
+        read_addr(self.pos, 12)
     }
 
     fn read_underlying_additional(&self, size: usize) -> ReadAddr {
@@ -952,7 +910,7 @@ impl LL4 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LL3Holder {
     pub pos: usize,
     pub ll4: usize,
@@ -960,85 +918,73 @@ struct LL3Holder {
     pub add_data: usize,
 }
 
+use core::iter::from_coroutine;
+
 impl LL3Holder {
-    fn read_underlying(&self) -> Box<[LL4]> {
+    fn read_underlying<'a>(&'a self) -> impl Iterator<Item = LL4> + 'a {
         if self.ll4 == 0 {
             #[cfg(feature = "logtofile")]
             info!("ll4 is 0 ,painc");
             panic!("ll4 is 0");
         }
+        let c = || {
+            let last = read_ll4(self.ll4);
+            let mut last_next = last.next;
+            yield last;
 
-        let mut b = vec![read_ll4(self.ll4)];
-
-        if self.listcount > 100000 {
-            panic!("list too big");
-        }
-
-        for _ in 0..self.listcount {
-            let last = b.last().unwrap();
-            let next = last.next;
-            if next == 0 {
-                //#[cfg(feature = "logtofile")]
-                //info!(
-                //    "next was equal to zero, pos {}, out of {}",
-                //    a,
-                //    self.listcount - 1
-                //);
-                panic!();
-            };
-            b.push(read_ll4(next));
-        }
-
-        b.into_boxed_slice()
-    }
-
-    fn read_all(self, additional_size: usize) -> Box<[ReadAddr]> {
-        //I think that readLL3 does not read itself, however, I will leave this here because it cannot hurt
-
-        if self.listcount == 0 {
-            Box::new([read_ll4(self.ll4).to_addr(), self.to_addr()])
-        } else {
-            let size = additional_size;
-            if size == 0 {
-                self.read_underlying()
-                    .to_vec()
-                    .into_iter()
-                    .map(|x| x.to_addr())
-                    .chain([self.to_addr()].into_iter())
-                    .collect()
-            } else {
-                let mut uv = self.read_underlying().to_vec();
-                let first = uv.remove(0);
-
-                uv.into_iter()
-                    .map(|x| {
-                        if x.additional_data == 0 {
-                            vec![x.to_addr()].into_iter()
-                        } else {
-                            let f = x.read_underlying_additional(size);
-                            let sec = x.to_addr();
-                            vec![f, sec].into_iter()
-                        }
-                    })
-                    .flatten()
-                    .chain([first.to_addr()].into_iter())
-                    .chain([self.to_addr()].into_iter())
-                    .collect()
+            if self.listcount > 100000 {
+                panic!("list too big");
             }
-        }
+
+            for _ in 0..self.listcount {
+                let next = last_next;
+                if next == 0 {
+                    //#[cfg(feature = "logtofile")]
+                    //info!(
+                    //    "next was equal to zero, pos {}, out of {}",
+                    //    a,
+                    //    self.listcount - 1
+                    //);
+                    panic!();
+                };
+                let last = read_ll4(next);
+                last_next = last.next;
+                yield last
+            }
+        };
+        from_coroutine(c)
     }
 
-    fn to_addr(self) -> ReadAddr {
-        ReadAddr {
-            pos: self.pos,
-            content: [
-                self.ll4.to_le_bytes(),
-                self.listcount.to_le_bytes(),
-                self.add_data.to_le_bytes(),
-            ]
-            .concat()
-            .into_boxed_slice(),
-        }
+    fn read_all<'a>(&'a self, additional_size: usize) -> impl Iterator<Item = ReadAddr> + 'a {
+        //I think that readLL3 does not read itself, however, I will leave this here because it cannot hurt
+        let c = move || {
+            yield self.to_addr();
+            if self.listcount == 0 {
+                yield read_ll4(self.ll4).to_addr();
+            } else {
+                let size = additional_size;
+                if size == 0 {
+                    for ll4 in self.read_underlying() {
+                        yield ll4.to_addr();
+                    }
+                } else {
+                    let mut uv = self.read_underlying();
+                    yield uv.next().unwrap().to_addr();
+
+                    for ll4 in uv {
+                        yield ll4.to_addr();
+                        if ll4.additional_data != 0 {
+                            yield ll4.read_underlying_additional(size);
+                        }
+                    }
+                }
+            };
+        };
+        from_coroutine(c)
+    }
+
+    fn to_addr(&self) -> ReadAddr {
+        read_addr(self.pos, 12)
     }
 }
 
@@ -1047,20 +993,11 @@ impl VecAddr {
         read_addr(self.start, self.end - self.start)
     }
 
-    fn to_addr(self) -> ReadAddr {
-        ReadAddr {
-            pos: self.pos,
-            content: [
-                self.start.to_le_bytes(),
-                self.maybecapacity.to_le_bytes(),
-                self.end.to_le_bytes(),
-            ]
-            .concat()
-            .into_boxed_slice(),
-        }
+    fn to_addr(&self) -> ReadAddr {
+        read_addr(self.pos, 12)
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Deque {
     #[allow(unused)]
     pos: usize,
@@ -1074,41 +1011,28 @@ struct Deque {
 
 impl Deque {
     #[allow(unused)]
-    fn to_addr(self) -> ReadAddr {
-        ReadAddr {
-            pos: self.pos,
-            content: [
-                self.f0.to_le_bytes(),
-                self.data.to_le_bytes(),
-                self.size.to_le_bytes(),
-                self.f3.to_le_bytes(),
-                self.obj_s.to_le_bytes(),
-            ]
-            .concat()
-            .into_boxed_slice(),
-        }
+    fn to_addr(&self) -> ReadAddr {
+        read_addr(self.pos, 20)
     }
 
-    fn read_underlying(&self, size: usize) -> Box<[ReadAddr]> {
+    fn read_underlying<'a>(&'a self, size: usize) -> impl Iterator<Item = ReadAddr> + 'a {
         let unknown: ReadAddr = read_addr(self.data, self.size * 4);
 
-        unknown
-            .content
-            .clone()
-            .chunks(4)
-            .map(|x| usize::from_le_bytes(x.try_into().unwrap()))
-            .filter(|x| *x != 0)
-            .map(|x| read_addr(x, size))
-            .chain([unknown].into_iter())
-            .collect()
+        match size {
+            0 => &[],
+            _ => unsafe { unknown.usize_align_() },
+        }
+        .into_iter()
+        .filter(|x| **x != 0)
+        .map(move |x| read_addr(*x, size))
+        .chain([unknown].into_iter())
     }
 
-    fn read_whole(self, size: usize) -> Box<[ReadAddr]> {
-        if self.obj_s == 0 {
-            return Box::new([]);
-        }
-
-        self.read_underlying(size)
+    fn read_whole<'a>(&'a self, size: usize) -> impl Iterator<Item = ReadAddr> + 'a {
+        self.read_underlying(match self.obj_s {
+            0 => 0,
+            _ => size,
+        })
     }
 }
 
@@ -1117,22 +1041,31 @@ fn read_addr(pos: usize, size: usize) -> ReadAddr {
     if size > 10000 {
         panic!("size too big {}", size);
     }
-    if pos == 0 || size == 0 {
+    assert!(!(pos == 0 && size != 0));
+    if size == 0 {
         #[cfg(feature = "logtofile")]
         if ISDEBUG {
             info!("unchecked 0 addr read")
         };
         return ReadAddr {
-            pos: 0,
-            content: Box::new([]),
+            content: ReadAddrContent {
+                // to create a reference, pos should be non-null and aligned
+                metadata: ReadAddrMetadata {
+                    pos: 4 as _,
+                    size: 0,
+                },
+            },
         };
     }
 
-    let ptr = pos as *const u8;
-    ReadAddr {
-        pos: pos,
-        content: unsafe { std::slice::from_raw_parts(ptr, size) }.into(),
-    }
+    return ReadAddr {
+        content: ReadAddrContent {
+            metadata: ReadAddrMetadata {
+                pos: pos as *mut u8,
+                size: size,
+            },
+        },
+    };
 }
 #[must_use]
 fn read_vec(pos: usize) -> VecAddr {
@@ -1173,11 +1106,7 @@ fn read_ll4(pos: usize) -> LL4 {
 fn read_maybe_ring_buffer(pos: usize) -> Deque {
     let m = read_addr(pos, 20);
 
-    let w = m
-        .content
-        .chunks(4)
-        .map(|x| usize::from_le_bytes(x.try_into().unwrap()))
-        .collect::<Vec<_>>();
+    let w = m.usize_align();
 
     Deque {
         pos: pos,
@@ -1193,16 +1122,17 @@ fn get_ptr(from: &[u8], offset: usize) -> usize {
     usize::from_le_bytes(from[offset..offset + 4].try_into().unwrap())
 }
 
-#[derive(Debug, Clone)]
-struct ExtraState {
+#[derive(Debug)]
+pub struct ExtraState {
     cb: Callbacks,
     state: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Frame {
     pub number: usize,
-    pub adresses: Box<[ReadAddr]>,
+    pub addresses: Box<[ReadAddrMetadata]>,
+    pub addresses_buf: Box<[u8]>,
     pub fp: [u8; 108],
     pub frees: Vec<usize>,
     pub allocs: Vec<usize>,
@@ -1261,7 +1191,7 @@ impl Frame {
     }
 
     fn size_data(&self) -> String {
-        let addr_total = self.adresses.iter().fold(0, |a, x| a + x.content.len());
+        let addr_total = self.addresses.iter().fold(0, |a, x| a + x.size);
         let freetotal = self.frees.len() * 4;
         let alloctotal = self.allocs.len() * 4;
         format!("addr: {addr_total} frees: {freetotal} allocs: {alloctotal}")
@@ -1270,9 +1200,9 @@ impl Frame {
     fn redundency_data(&self) -> String {
         let mut w = HashSet::new();
         let mut counter = 0;
-        for a in self.adresses.iter() {
-            for b in 0..a.content.len() {
-                if !w.insert(a.pos + b) {
+        for a in self.addresses.iter() {
+            for b in 0..a.size {
+                if !w.insert(a.pos as usize + b) {
                     counter += 1;
                 }
             }
@@ -1297,9 +1227,18 @@ impl Frame {
                 (a.cb.load_state_pre)(self.number, a.state);
             }
         }
-        for a in self.adresses.iter() {
-            a.restore();
+        let mut index = 0;
+        for a in self.addresses.iter() {
+            let new_index = index + a.size.div_ceil(4) * 4;
+            if a.pos != null_mut() {
+                unsafe {
+                    a.pos
+                        .copy_from(self.addresses_buf[index..new_index].as_ptr(), a.size);
+                }
+            }
+            index = new_index;
         }
+        assert_eq!(self.addresses_buf.len(), index);
         for a in self.extra_states.iter() {
             unsafe {
                 (a.cb.load_state_post)(a.state);

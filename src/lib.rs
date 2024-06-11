@@ -33,7 +33,7 @@ use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
 
 //use notify::{RecursiveMode, Watcher};
-use rollback::{Rollbacker, DUMP_FRAME_TIME};
+use rollback::{Rollbacker, DUMP_FRAME_TIME, LAST_M_LEN};
 use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
@@ -854,6 +854,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         NEXT_DRAW_ROLLBACK = None;
         NEXT_DRAW_ENEMY_DELAY = None;
         DUMP_FRAME_TIME = None;
+        LAST_M_LEN = 0;
     }
 
     //no_ko_sound
