@@ -1,7 +1,7 @@
 use crate::{
     draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
     read_key_better, resume,
-    rollback::{dump_frame, Frame},
+    rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, ENABLE_CHECK_MODE,
     INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
@@ -14,6 +14,7 @@ use std::{
     io::Write,
     os::raw::c_void,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
+    time::Duration,
     u32,
 };
 use winapi::shared::{
@@ -392,7 +393,7 @@ pub static mut CHECK: Option<Check> = None;
 pub static mut PERFORMANCE_TEST: Option<PerformanceTest> = None;
 // const NO_ACCESS: bool = false;
 const DEFAULT_TESTED_MAX_ROLLBACK: u32 = 6;
-const TEST_ALL_SMALLER_ROLLBACK: bool = false;
+const TEST_ALL_SMALLER_ROLLBACK: bool = true;
 pub unsafe fn handle_replay(
     framecount: usize,
     battle_state: &mut u32,
@@ -405,6 +406,8 @@ pub unsafe fn handle_replay(
         REPLAY_KO_FRAMECOUNT = None;
         LAST_TARGET = None;
         if ENABLE_CHECK_MODE && read_key_better(0x2E) {
+            DUMP_FRAME_TIME = Some(Duration::ZERO);
+            AllocConsole();
             println!("Enter check mode.");
             println!("Start step 1: playing the replay normally.");
             DISABLE_SOUND = true;
@@ -414,7 +417,6 @@ pub unsafe fn handle_replay(
                 is_failed: false,
             });
             PAUSESTATE.store(0, Relaxed);
-            AllocConsole();
         } else if let Some(max_rb) = (1..=13).find_map(|x| read_key_better(x + 1).then_some(x)) {
             PAUSESTATE.store(0, Relaxed);
             NEXT_DRAW_ROLLBACK = Some(max_rb as i32);
@@ -734,11 +736,12 @@ pub unsafe fn handle_replay(
                         check_failed();
                     } else if being_tested_frame_ + 1 == check.check_data.len() {
                         println!(
-                            "Tests are complete! {}",
+                            "Tests are complete! {} Time: {:?}",
                             match check.is_failed {
                                 false => "All tests pass!",
                                 true => "At least a test was failed.",
-                            }
+                            },
+                            DUMP_FRAME_TIME.unwrap()
                         );
                         PAUSESTATE.store(1, Relaxed);
                         CHECK = None;
