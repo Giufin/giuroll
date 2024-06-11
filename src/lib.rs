@@ -1,6 +1,8 @@
 #![feature(pointer_is_aligned)]
 #![feature(abi_thiscall)]
 #![feature(let_chains)]
+#![feature(coroutines)]
+#![feature(iter_from_coroutine)]
 
 use core::panic;
 use std::{
@@ -31,7 +33,7 @@ use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
 
 //use notify::{RecursiveMode, Watcher};
-use rollback::Rollbacker;
+use rollback::{Rollbacker, DUMP_FRAME_TIME};
 use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
@@ -851,6 +853,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         GIRLSTALKED = false;
         NEXT_DRAW_ROLLBACK = None;
         NEXT_DRAW_ENEMY_DELAY = None;
+        DUMP_FRAME_TIME = None;
     }
 
     //no_ko_sound

@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     ffi::c_void,
     hash::RandomState,
+    time::Duration,
 };
 
 use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
@@ -311,6 +312,7 @@ impl RollFrame {
     }
 }
 static mut FPST: [u8; 108] = [0u8; 108];
+pub static mut DUMP_FRAME_TIME: Option<Duration> = None;
 pub unsafe fn dump_frame() -> Frame {
     let w = unsafe {
         //let b = 3;
@@ -320,6 +322,11 @@ pub unsafe fn dump_frame() -> Frame {
             fpst = sym FPST
         );
         FPST
+    };
+    use std::time::Instant;
+    let now: Option<Instant> = match DUMP_FRAME_TIME {
+        None => None,
+        Some(_) => Some(Instant::now()),
     };
     // println!("dump {}", *SOKU_FRAMECOUNT);
 
@@ -855,7 +862,7 @@ pub unsafe fn dump_frame() -> Frame {
         extra_states.push(ExtraState { cb: *cb, state: i })
     }
 
-    Frame {
+    let f = Frame {
         number: *SOKU_FRAMECOUNT,
         adresses: m.into_boxed_slice(),
         fp: w,
@@ -864,7 +871,13 @@ pub unsafe fn dump_frame() -> Frame {
         extra_states,
         weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
             & 0xFF) as u8,
+    };
+    if let Some(time) = &mut DUMP_FRAME_TIME
+        && let Some(now) = now
+    {
+        *time += now.elapsed();
     }
+    f
 }
 
 fn read_heap(pos: usize) -> usize {
