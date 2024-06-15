@@ -5,16 +5,17 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     ffi::c_void,
     hash::RandomState,
+    iter::{empty, Empty},
     ops::Deref,
     ptr::null_mut,
     time::Duration,
 };
 
-use windows::{imp::HeapFree, Win32::System::Memory::HeapHandle};
+use windows::Win32::System::Memory::HeapHandle;
 
 use crate::{
-    println, ptr_wrap, set_input_buffer, Callbacks, CALLBACK_ARRAY, ISDEBUG, MEMORY_RECEIVER_ALLOC,
-    MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
+    println, ptr_wrap, set_input_buffer, soku_heap_free, Callbacks, CALLBACK_ARRAY, ISDEBUG,
+    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];
@@ -141,11 +142,13 @@ impl Rollbacker {
                 .map(|x| x == self.guessed[0].enemy_input)
                 .unwrap_or(false))
         {
-            let m = self.guessed.remove(0);
+            let mut m = self.guessed.remove(0);
 
             self.weathers
                 .insert(m.prev_state.number, m.prev_state.weather_sync_check);
             m.prev_state.did_happen();
+            #[cfg(feature = "logrollback")]
+            println!("did_happen {}", m.prev_state.number);
             //let b = &mut *FREEMUTEX.lock().unwrap();
             //for a in m.prev_state.frees {
             //    b.insert(a);
@@ -159,6 +162,8 @@ impl Rollbacker {
     }
 
     fn apply_input(input: RInput, opponent_input: RInput) {
+        #[cfg(feature = "logrollback")]
+        println!("apply input {:?}", opponent_input);
         let is_p1 = unsafe {
             let netmanager = *(0x8986a0 as *const usize);
             *ptr_wrap!(netmanager as *const usize) == 0x858cac
@@ -172,31 +177,6 @@ impl Rollbacker {
     }
 
     pub fn step(&mut self, iteration_number: usize) -> Option<()> {
-        unsafe {
-            if self.guessed.len() > 0 && (self.rolling_back || iteration_number == 0) {
-                // this is how we were supposed to store the memory to be dealocated on-the-fly, but this also seems buggy
-                let last = if iteration_number == 0 {
-                    self.guessed.len() - 1
-                } else {
-                    iteration_number - 1
-                };
-
-                let pstate = &mut self.guessed[last].prev_state;
-                while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
-                    pstate.frees.push(man);
-                }
-
-                while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
-                    //a
-                    pstate.allocs.push(man);
-                    //if !pstate.frees.contains(&man) {
-                    //} else {
-                    //    pstate.frees.retain(|x| *x != man);
-                    //}
-                }
-            }
-        }
-
         let tbr = if self.guessed.len() == iteration_number {
             //last iteration for this frame, handle sound here
             if self.rolling_back {
@@ -256,14 +236,15 @@ impl Rollbacker {
 
             Some(())
         } else {
-            let fr = &mut self.guessed[iteration_number];
-
+            let (fr_, remain) = self.guessed[iteration_number..].split_at_mut(1);
+            let fr = &mut fr_[0];
             if self.rolling_back {
                 unsafe {
-                    let frame = dump_frame();
-
-                    let prev = std::mem::replace(&mut fr.prev_state, frame);
-                    //prev.never_happened(); //this "variant" causes crashes
+                    let frame = dump_frame(None::<Empty<_>>, None::<Empty<_>>);
+                    #[cfg(feature = "logrollback")]
+                    println!("dump {}", frame.number);
+                    let mut prev = std::mem::replace(&mut fr.prev_state, frame);
+                    // prev.never_happened();
                     //let b = &mut *ALLOCMUTEX.lock().unwrap();
                     //for a in prev.allocs {
                     //    b.insert(a);
@@ -279,10 +260,14 @@ impl Rollbacker {
                     manager.pop_sounds_since(fr.prev_state.number, self.current);
                 }
                 self.rolling_back = true;
-                fr.prev_state.restore();
+                fr.prev_state.restore(
+                    Some(remain.iter_mut().map(|x| &mut x.prev_state)),
+                    None::<Empty<_>>,
+                    None::<Empty<_>>,
+                );
+                #[cfg(feature = "logrollback")]
+                println!("restore {}", fr.prev_state.number);
                 //fr.prev_state.clone().never_happened();
-                fr.prev_state.frees.clear();
-                fr.prev_state.allocs.clear();
 
                 fr.enemy_input = self.enemy_inputs.get(fr.prev_state.number);
                 Self::apply_input(fr.player_input, fr.enemy_input);
@@ -306,7 +291,9 @@ pub static mut LAST_M_LEN: usize = 0;
 
 impl RollFrame {
     fn dump_with_guess(player_input: RInput, guess: RInput) -> Self {
-        let prev_state = unsafe { dump_frame() };
+        let prev_state = unsafe { dump_frame(None::<Empty<_>>, None::<Empty<_>>) };
+        #[cfg(feature = "logrollback")]
+        println!("dump {} with guess", prev_state.number);
 
         Self {
             prev_state,
@@ -317,7 +304,10 @@ impl RollFrame {
 }
 static mut FPST: [u8; 108] = [0u8; 108];
 pub static mut DUMP_FRAME_TIME: Option<Duration> = None;
-pub unsafe fn dump_frame() -> Frame {
+pub unsafe fn dump_frame(
+    extra_allocs: Option<impl Iterator<Item = usize>>,
+    extra_frees: Option<impl Iterator<Item = usize>>,
+) -> Frame {
     let w = unsafe {
         //let b = 3;
         asm!(
@@ -586,10 +576,7 @@ pub unsafe fn dump_frame() -> Frame {
                     if p3 != 0 {
                         let s = read_heap(p3);
                         if s > 4000 {
-                            #[cfg(feature = "logtofile")]
-                            {
-                                info!("bullet data too big! {}", s)
-                            }
+                            panic!("bullet data too big! {}", s)
                         } else {
                             m.push(read_addr(p3, s));
                         }
@@ -809,16 +796,23 @@ pub unsafe fn dump_frame() -> Frame {
 
     LAST_M_LEN = m.len();
 
+    let mut alloc: Vec<usize> = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_iter().collect();
+    let mut frees: Vec<usize> = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter().collect();
+    extra_allocs.and_then(|x| Some(alloc.extend(x)));
+    extra_frees.and_then(|x| Some(frees.extend(x)));
+
     let f = Frame {
         number: *SOKU_FRAMECOUNT,
         addresses: m.into_iter().map(|x| x.content.metadata).collect(),
         addresses_buf: buf.into_boxed_slice(),
         fp: w,
-        frees: vec![],
-        allocs: vec![],
+        frees: MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter().collect(),
+        allocs: MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_iter().collect(),
         extra_states,
         weather_sync_check: ((*(0x8971c4 as *const usize) * 16) + (*(0x8971c4 as *const usize) * 1)
             & 0xFF) as u8,
+        has_happened: false,
+        has_called_never_happened: false,
     };
     if let Some(time) = &mut DUMP_FRAME_TIME
         && let Some(now) = now
@@ -1139,14 +1133,16 @@ pub struct Frame {
     pub extra_states: Vec<ExtraState>,
 
     pub weather_sync_check: u8,
+    pub has_called_never_happened: bool,
+    pub has_happened: bool,
 }
 
 impl Frame {
-    pub fn never_happened(&self) -> (HashSet<usize>, HashSet<usize>) {
+    pub fn never_happened(&mut self) -> (HashSet<usize>, HashSet<usize>) {
+        assert!(!self.has_happened);
+        self.has_called_never_happened = true;
         let mut allocs: HashSet<usize> = self.allocs.iter().map(|x| *x).collect();
         let mut frees: HashSet<usize> = self.frees.iter().map(|x| *x).collect();
-
-        let heap = unsafe { *(0x89b404 as *const isize) };
 
         let alloc_then_free: Vec<usize> = allocs.intersection(&frees).map(|x| *x).collect();
         for a in alloc_then_free {
@@ -1156,8 +1152,10 @@ impl Frame {
             };
             allocs.remove(&a);
             frees.remove(&a);
-            unsafe { HeapFree(heap, 0, a as *const c_void) };
+            unsafe { soku_heap_free!(a) };
         }
+        self.allocs.retain(|x| allocs.contains(x));
+        self.frees.retain(|x| frees.contains(x));
 
         // for a in allocs.difference(&frees) {
         //     //println!("never freed: {}", a);
@@ -1170,24 +1168,25 @@ impl Frame {
         (allocs, frees)
     }
 
-    pub fn did_happen(&self) {
+    pub fn did_happen(&mut self) {
         //let m = &mut *ALLOCMUTEX.lock().unwrap();
         //
         //for a in self.frees.iter() {
         //    m.remove(a);
         //}
+        assert!(!self.has_called_never_happened);
+        self.has_happened = true;
 
         for a in &self.frees {
-            let heap = unsafe { *(0x89b404 as *const isize) };
-            if *a != 0 {
-                unsafe { HeapFree(heap, 0, *a as *const c_void) };
-            }
+            unsafe { soku_heap_free!(*a) };
         }
         for a in self.extra_states.iter() {
             unsafe {
                 (a.cb.free_state)(a.state, false);
             }
         }
+        self.frees.clear();
+        self.allocs.clear();
     }
 
     fn size_data(&self) -> String {
@@ -1211,7 +1210,13 @@ impl Frame {
         format!("reduntant bytes: {}", counter)
     }
 
-    pub fn restore(&self) {
+    pub fn restore(
+        &self,
+        dropped_frames: Option<impl Iterator<Item = &mut Frame>>,
+        extra_allocs: Option<impl Iterator<Item = usize>>,
+        extra_frees: Option<impl Iterator<Item = usize>>,
+    ) {
+        assert!(!self.has_called_never_happened);
         unsafe {
             FPST = self.fp;
             asm!(
@@ -1219,8 +1224,47 @@ impl Frame {
                 fpst = sym FPST
             )
         }
+        let mut allocs: HashSet<usize> = HashSet::new();
+        fn free_if_allocated(
+            allocs: &mut HashSet<usize>,
+            new_allocs: Option<impl Iterator<Item = usize>>,
+            new_frees: Option<impl Iterator<Item = usize>>,
+        ) {
+            if let Some(new_allocs) = new_allocs {
+                allocs.extend(new_allocs);
+            }
+            if let Some(new_frees) = new_frees {
+                for a in new_frees {
+                    if allocs.contains(&a) {
+                        unsafe { soku_heap_free!(a) };
+                        allocs.remove(&a);
+                    }
+                }
+            }
+        }
+        if let Some(dropped_frames) = dropped_frames {
+            for f in dropped_frames {
+                let (_, __) = f.never_happened();
+                free_if_allocated(
+                    &mut allocs,
+                    Some(f.allocs.iter().map(|x| *x)),
+                    Some(f.frees.iter().map(|x| *x)),
+                );
+                f.allocs.clear();
+                f.frees.clear();
+            }
+        }
+        free_if_allocated(&mut allocs, extra_allocs, extra_frees);
+        unsafe {
+            free_if_allocated(
+                &mut allocs,
+                Some(MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_iter()),
+                Some(MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter()),
+            );
+        }
 
-        // println!("restore {}", self.number);
+        #[cfg(feature = "logrollback")]
+        println!("restore {}", self.number);
 
         for a in self.extra_states.iter() {
             unsafe {

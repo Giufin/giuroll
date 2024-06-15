@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 logtofile = ["dep:fern", "dep:humantime", "dep:log"]
 allocconsole = []
 f62 = []
+logrollback = []
 
 [dependencies.windows]
 version = "0.48"

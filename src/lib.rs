@@ -3,6 +3,7 @@
 #![feature(let_chains)]
 #![feature(coroutines)]
 #![feature(iter_from_coroutine)]
+#![feature(anonymous_lifetime_in_impl_trait)]
 
 use core::panic;
 use std::{
@@ -38,7 +39,7 @@ use sound::RollbackSoundManager;
 use windows::{
     imp::{HeapAlloc, HeapFree, WaitForSingleObject},
     Win32::{
-        Foundation::{HMODULE, HWND, TRUE},
+        Foundation::{GetLastError, HMODULE, HWND, TRUE},
         Networking::WinSock::{closesocket, SOCKADDR, SOCKET},
         System::{
             Console::AllocConsole,
@@ -824,7 +825,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         //SOUND_THAT_MAYBE_HAPPEN.lock().unwrap().clear();
 
         //INPUTS_RAW.lock().unwrap().clear();
-        let _heap = unsafe { *(0x89b404 as *const isize) };
 
         // we should be removing allocations that happen during frames which were rolled back, but that somehow breaks it, possibly because of some null check initializations
         //let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
@@ -843,9 +843,15 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
         // it cannot be used by any different thread now
         if let Some(x) = ROLLBACKER.take() {
-            for a in x.guessed {
-                a.prev_state.did_happen();
+            for mut a in x.guessed {
+                if !a.prev_state.has_called_never_happened && !a.prev_state.has_happened {
+                    a.prev_state.did_happen();
+                }
             }
+        }
+
+        for a in MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter() {
+            soku_heap_free!(a);
         }
 
         clean_replay_statics();
@@ -888,52 +894,6 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     let new = unsafe { ilhook::x86::Hooker::new(0x481960, HookType::JmpBack(on_exit), 0).hook(6) };
     std::mem::forget(new);
-
-    unsafe extern "cdecl" fn onexitexit(a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {
-        let f = std::mem::transmute::<usize, extern "fastcall" fn(u32)>((*a).edx as usize);
-
-        f((*a).ecx);
-        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
-        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
-
-        for a in allocset.difference(&freeset) {
-            //    unsafe { HeapFree(heap, 0, *a as *const c_void) };
-            println!("alloced but not freed: {}", a);
-        }
-        return;
-        let allocset = std::mem::replace(&mut *ALLOCMUTEX.lock().unwrap(), BTreeSet::new());
-        let freeset = std::mem::replace(&mut *FREEMUTEX.lock().unwrap(), BTreeSet::new());
-
-        for a in &freeset {
-            //    unsafe { HeapFree(heap, 0, *a as *const c_void) };
-            println!("since then freed: {}", a);
-        }
-    }
-
-    let return_insert_addr = 0x48196f + 5;
-    let new = unsafe {
-        ilhook::x86::Hooker::new(
-            0x48196f,
-            HookType::JmpToAddr(return_insert_addr, 0, onexitexit),
-            0,
-        )
-        .hook(5)
-    };
-
-    std::mem::forget(new);
-
-    let funnyaddr = return_insert_addr;
-    let mut b = PAGE_PROTECTION_FLAGS(0);
-    unsafe {
-        VirtualProtect(
-            funnyaddr as *const c_void,
-            1,
-            PAGE_PROTECTION_FLAGS(0x40),
-            &mut b as *mut PAGE_PROTECTION_FLAGS,
-        );
-
-        *(funnyaddr as *mut u8) = 0xc3;
-    }
 
     unsafe extern "cdecl" fn spectator_skip(
         a: *mut ilhook::x86::Registers,
@@ -1010,6 +970,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             0x00857174 as *mut unsafe extern "stdcall" fn(_, _, _) -> _,
             heap_alloc_override,
         );
+        ORI_HEAP_REALLOC = Some(tamper_memory(
+            0x00857180 as *mut unsafe extern "stdcall" fn(_, _, _, _) -> _,
+            heap_realloc_override,
+        ));
     }
 
     // let s = 0x822499; //0x822465;
@@ -1500,6 +1464,20 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 
 static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
+#[macro_export]
+macro_rules! soku_heap_free {
+    ($ptr:expr) => {{
+        use windows::{imp::HeapFree, Win32::Foundation::GetLastError};
+        let a: usize = $ptr;
+        assert_ne!(
+            HeapFree(*(0x89b404 as *const isize), 0, a as *const c_void),
+            0,
+            "HeapFree failed for {:?}",
+            GetLastError()
+        );
+    }};
+}
+
 unsafe extern "stdcall" fn heap_free_override(heap: isize, flags: u32, s: *const c_void) -> i32 {
     // Soku2 unaligned (*_a).esp (can be triggered with j2a and db of Momizi):
 
@@ -1583,6 +1561,7 @@ unsafe extern "stdcall" fn heap_alloc_override(heap: isize, flags: u32, s: usize
     {
         //println!("wrong heap alloc");
     } else {
+        assert_ne!(ret, null_mut(), "HeapAlloc failed for {:?}", GetLastError());
         store_alloc(ret as usize);
     }
     return ret;
@@ -1597,8 +1576,27 @@ unsafe extern "stdcall" fn heap_alloc_override(heap: isize, flags: u32, s: usize
 //     }
 // }
 
-#[allow(unused)]
-unsafe extern "cdecl" fn reallochook(a: *mut ilhook::x86::Registers, _b: usize) {}
+static mut ORI_HEAP_REALLOC: Option<unsafe extern "stdcall" fn(isize, u32, usize, usize) -> usize> =
+    None;
+
+unsafe extern "stdcall" fn heap_realloc_override(
+    heap: isize,
+    flags: u32,
+    p: usize,
+    s: usize,
+) -> usize {
+    if *(0x89b404 as *const usize) != heap as usize
+        /*|| !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)*/
+        || *SOKU_FRAMECOUNT == 0 ||
+        GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
+    {
+        //println!("wrong heap alloc");
+        ORI_HEAP_REALLOC.unwrap()(heap, flags, p, s)
+    } else {
+        REQUESTED_THREAD_ID.store(0, Relaxed);
+        panic!("HeapRealloc({},{},{},{})!!!", heap, flags, p, s);
+    }
+}
 
 use core::sync::atomic::AtomicU8;
 
@@ -2091,6 +2089,8 @@ unsafe fn handle_online(
     cur_speed_iter: &mut u32,
     state_sub_count: &mut u32,
 ) {
+    #[cfg(feature = "logrollback")]
+    println!("handle {} ({})", framecount, cur_speed_iter);
     if framecount == 0 && !BATTLE_STARTED {
         let round = *ptr_wrap!((*(0x8986a0 as *const usize) + 0x6c0) as *const u8);
 

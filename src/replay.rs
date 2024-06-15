@@ -1,6 +1,6 @@
 use crate::{
-    draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
-    read_key_better, resume,
+    soku_heap_free, draw_num_x_center, get_num_length, pause, println, ptr_wrap,
+    read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, ENABLE_CHECK_MODE,
     INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
@@ -12,6 +12,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     error::Error,
     io::Write,
+    iter::Empty,
     os::raw::c_void,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
     time::Duration,
@@ -21,7 +22,6 @@ use winapi::shared::{
     d3d9::IDirect3DDevice9,
     d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_RGBA, D3DPT_TRIANGLEFAN, D3DRECT},
 };
-use windows::imp::HeapFree;
 use windows::Win32::System::Console::AllocConsole;
 
 struct RePlayRePlay {
@@ -210,13 +210,12 @@ pub unsafe extern "cdecl" fn is_replay_over(
 }
 
 pub unsafe fn clean_replay_statics() {
-    for a in std::mem::replace(&mut FRAMES, VecDeque::new()) {
+    for mut a in std::mem::replace(&mut FRAMES, VecDeque::new()) {
         a.did_happen();
     }
     if let Some(frees) = FREES.take() {
-        let heap = unsafe { *(0x89b404 as *const isize) };
-        for f in frees {
-            HeapFree(heap, 0, f as *const c_void);
+        for a in frees {
+            soku_heap_free!(a);
         }
     }
     ALLOCS = None;
@@ -437,16 +436,15 @@ pub unsafe fn handle_replay(
         }
     }
 
-    while let Ok(man) = MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_recv() {
+    for man in MEMORY_RECEIVER_ALLOC.as_ref().unwrap().try_iter() {
         ALLOCS.as_mut().unwrap().insert(man);
     }
-    let heap = unsafe { *(0x89b404 as *const isize) };
-    while let Ok(man) = MEMORY_RECEIVER_FREE.as_ref().unwrap().try_recv() {
-        if ALLOCS.as_ref().unwrap().contains(&man) {
-            ALLOCS.as_mut().unwrap().remove(&man);
-            HeapFree(heap, 0, man as *const c_void);
+    for a in MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter() {
+        if ALLOCS.as_ref().unwrap().contains(&a) {
+            ALLOCS.as_mut().unwrap().remove(&a);
+            soku_heap_free!(a);
         } else {
-            FREES.as_mut().unwrap().insert(man);
+            FREES.as_mut().unwrap().insert(a);
         }
     }
 
@@ -619,7 +617,7 @@ pub unsafe fn handle_replay(
                 if is_over {
                     override_target_frame = Some(1);
                     check.check_step = CheckStep::TestPlay2;
-                    FRAMES.push_back(dump_frame());
+                    FRAMES.push_back(dump_frame(None::<Empty<_>>, None::<Empty<_>>));
                     println!("Step 1 got {} frames.", check.check_data.len());
                     println!("Start step 2: rollbacking to the beginning and replaying the replay.")
                 } else {
@@ -752,7 +750,7 @@ pub unsafe fn handle_replay(
                                 (false, true) => (being_tested_frame, cur_rollback + 1, false),
                                 (true, true) => {
                                     // println!("clear frame {}", being_tested_frame);
-                                    while let Some(frame) = FRAMES.front()
+                                    while let Some(frame) = FRAMES.front_mut()
                                         && frame.number <= being_tested_frame_
                                     {
                                         frame.did_happen();
@@ -808,7 +806,7 @@ pub unsafe fn handle_replay(
             // println!("now {}", framecount);
             test.base_framecount += 1;
             override_target_frame = Some(test.base_framecount.try_into().unwrap());
-            while let Some(frame) = FRAMES.front()
+            while let Some(frame) = FRAMES.front_mut()
                 && frame.number < test.base_framecount
             {
                 frame.did_happen();
@@ -904,62 +902,20 @@ pub unsafe fn handle_replay(
 
             // println!("target {}", target);
 
-            let mut last: Option<Frame> = None;
-            let (mut allocs, mut frees) = (HashSet::<usize>::new(), HashSet::<usize>::new());
+            let mut dropped_frame: Vec<Frame> = vec![];
             loop {
                 let candidate = FRAMES.back_mut();
                 if let Some(x) = candidate {
-                    if let Some(x) = last.take() {
-                        // println!("never_happen frame {} >>>", x.number);
-                        let (allocs_, frees_) = x.never_happened();
-                        allocs.extend(allocs_);
-                        frees.extend(frees_);
-                        let alloc_then_free: Vec<_> = allocs
-                            .intersection(&frees)
-                            .into_iter()
-                            .map(|x| *x)
-                            .collect();
-                        for p in alloc_then_free {
-                            HeapFree(heap, 0, p as *const c_void);
-                            allocs.remove(&p);
-                            frees.remove(&p);
-                        }
-                        // for a in allocs {
-                        //     ALLOCS.as_mut().unwrap().insert(*a);
-                        // }
-                        // for f in frees {
-                        //     FREES.as_mut().unwrap().insert(*f);
-                        // }
-                    }
-                    // println!("pop {}", x.number);
                     let framenum = x.number as u32;
                     if framenum <= target {
                         IS_REWINDING.store(1, Relaxed);
                         //good
                         let diff = target - framenum;
-                        // x.allocs
-                        //     .extend(ALLOCS.replace(HashSet::new()).unwrap().into_iter());
-                        // x.frees
-                        //     .extend(ALLOCS.replace(HashSet::new()).unwrap().into_iter());
-                        ALLOCS.as_mut().unwrap().clear();
-                        FREES.as_mut().unwrap().clear();
-                        x.restore();
-                        // println!("restore frame {} <<<", x.number);
-                        //x.did_happen();
-                        //dump_frame();
-                        //unsafe {
-                        //    FPST = x.fp;
-                        //    asm!(
-                        //        "FRSTOR {fpst}",
-                        //        fpst = sym FPST
-                        //    )
-                        //}
-                        //
-                        //for a in x.adresses.clone().to_vec().into_iter() {
-                        //    //if ISDEBUG { info!("trying to restore {}", a.pos) };
-                        //    a.restore();
-                        //    //if ISDEBUG { info!("success") };
-                        //}
+                        x.restore(
+                            Some(dropped_frame.iter_mut().rev()),
+                            Some(ALLOCS.replace(HashSet::new()).unwrap().into_iter()),
+                            Some(FREES.replace(HashSet::new()).unwrap().into_iter()),
+                        );
 
                         *cur_speed_iter = 1;
                         if diff == 0 {
@@ -978,16 +934,20 @@ pub unsafe fn handle_replay(
                         }
                         break;
                     } else {
-                        last = Some(FRAMES.pop_back().unwrap());
+                        dropped_frame.push(FRAMES.pop_back().unwrap());
                         continue;
                     }
                 } else {
                     //nothing can be done ?
                     println!("No such eailer frame to use");
 
-                    if let Some(last) = last.take() {
+                    if let Some(last) = dropped_frame.pop() {
                         // it can happen when rewind to frame 1
-                        last.restore();
+                        last.restore(
+                            Some(dropped_frame.iter_mut().rev()),
+                            Some(ALLOCS.replace(HashSet::new()).unwrap().into_iter()),
+                            Some(FREES.replace(HashSet::new()).unwrap().into_iter()),
+                        );
                         FRAMES.push_back(last);
                     }
                     pause(battle_state, weird_counter);
@@ -1027,14 +987,10 @@ pub unsafe fn handle_replay(
         if framecount == 0 {
             println!("try to save frame 0! stop it!");
         } else if FRAMES.is_empty() || FRAMES.back().unwrap().number != *SOKU_FRAMECOUNT {
-            let mut x = dump_frame();
-            x.allocs = ALLOCS
-                .replace(HashSet::new())
-                .unwrap()
-                .into_iter()
-                .collect();
-            x.frees = FREES.replace(HashSet::new()).unwrap().into_iter().collect();
-            // x.allocs.unwrap().retain(|x| !allocs.unwrap().contains(x));
+            let x = dump_frame(
+                Some(ALLOCS.replace(HashSet::new()).unwrap().into_iter()),
+                Some(FREES.replace(HashSet::new()).unwrap().into_iter()),
+            );
             // println!("push {}", x.number);
             FRAMES.push_back(x);
         }
