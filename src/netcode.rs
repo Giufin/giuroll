@@ -157,7 +157,6 @@ impl Netcoder {
     ) -> u32 {
         let function_start_time = Instant::now();
 
-        // self.id is lower than real framecount by 1, this is because we don't process frame 0
         while self.past_frame_starts.len() <= self.id {
             self.past_frame_starts.push(FrameTimeData::Empty);
         }
@@ -344,7 +343,11 @@ impl Netcoder {
                 if self.opponent_inputs[fr].is_none() {
                     //println!("{:?}", self.send_times[fr].elapsed());
 
-                    let inp_a = a;
+                    // rollbacking to frame 0 causes problems (such as crash)
+                    let inp_a = match fr {
+                        0 => 0,
+                        _ => a,
+                    };
 
                     self.opponent_inputs[fr] = Some(inp_a);
 
@@ -372,11 +375,21 @@ impl Netcoder {
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
-            rollbacker.self_inputs.push(current_input);
+            // rollbacking to frame 0 causes problems (such as crash)
+            let index = rollbacker.self_inputs.len();
+            rollbacker.self_inputs.push(match index {
+                0 => [false; 10],
+                _ => current_input,
+            });
         }
 
         while self.inputs.len() <= input_head {
-            self.inputs.push(input_to_accum(&current_input));
+            // rollbacking to frame 0 causes problems (such as crash)
+            let index = self.inputs.len();
+            self.inputs.push(input_to_accum(&match index {
+                0 => [false; 10],
+                _ => current_input,
+            }));
         }
 
         let mut ivec = self.inputs[input_range.clone()].to_vec();
