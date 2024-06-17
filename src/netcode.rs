@@ -118,6 +118,9 @@ pub struct Netcoder {
     last_median_sync: i32,
 
     pub autodelay_enabled: Option<i8>,
+
+    old_to_be_sent: Option<NetworkPacket>,
+    old_input: [bool; 10],
 }
 
 /// The packets are only sent once per frame; a packet contains all previous unconfirmed inputs; a lost "main" packet is not recovered whenever it's not neccesseary
@@ -145,6 +148,9 @@ impl Netcoder {
             time_syncs: vec![],
             last_median_sync: 0,
             autodelay_enabled: None,
+
+            old_to_be_sent: None,
+            old_input: [false; 10],
         }
     }
 
@@ -369,9 +375,48 @@ impl Netcoder {
             }
         }
 
+        // merge current input with the inputs from the time when the game was paused
+        for (index, x) in current_input.into_iter().enumerate() {
+            self.old_input[index] |= x;
+        }
+
+        let pause = if self.id > self.last_opponent_confirm + 30 {
+            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
+            println!(
+                "frame is missing: id: {}, confirm: {}",
+                self.id, self.last_opponent_confirm
+            );
+            unsafe { WARNING_FRAME_MISSING_1_COUNTDOWN = 120 };
+            true
+        } else if self.id
+            > self.last_opponent_input
+                + self.max_rollback
+                + self.delay.max(self.last_opponent_delay)
+        {
+            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
+            println!(
+                "frame is missing for reason 2: id: {}, confirm: {}",
+                self.id, self.last_opponent_confirm
+            );
+            unsafe { WARNING_FRAME_MISSING_2_COUNTDOWN = 120 };
+            true
+        } else {
+            false
+        };
+        if pause {
+            if let Some(old_to_be_sent) = self.old_to_be_sent.as_mut() {
+                old_to_be_sent.last_confirm =
+                    (self.last_opponent_input).min(old_to_be_sent.id + 30);
+                unsafe { send_packet(old_to_be_sent.encode()) };
+            }
+            return 0;
+        }
+
         let input_head = self.id;
 
         let input_range = self.last_opponent_confirm..=input_head;
+        let merged_current_input = self.old_input;
+        self.old_input = [false; 10];
 
         // do not override existing inputs; this can happen when delay is changed
         while rollbacker.self_inputs.len() <= input_head {
@@ -379,7 +424,7 @@ impl Netcoder {
             let index = rollbacker.self_inputs.len();
             rollbacker.self_inputs.push(match index {
                 0 => [false; 10],
-                _ => current_input,
+                _ => merged_current_input,
             });
         }
 
@@ -388,7 +433,7 @@ impl Netcoder {
             let index = self.inputs.len();
             self.inputs.push(input_to_accum(&match index {
                 0 => [false; 10],
-                _ => current_input,
+                _ => merged_current_input,
             }));
         }
 
@@ -413,6 +458,7 @@ impl Netcoder {
             last_confirm: (self.last_opponent_input).min(self.id + 30),
             sync: past,
         };
+        self.old_to_be_sent = Some(to_be_sent.clone());
 
         unsafe { send_packet(to_be_sent.encode()) };
         self.send_times.insert(input_head, Instant::now());
@@ -516,29 +562,7 @@ impl Netcoder {
             TARGET_OFFSET.fetch_add(res, Relaxed);
         }
 
-        if self.id > self.last_opponent_confirm + 30 {
-            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
-            println!(
-                "frame is missing: m: {m}, id: {}, confirm: {}",
-                self.id, self.last_opponent_confirm
-            );
-            unsafe { WARNING_FRAME_MISSING_1_COUNTDOWN = 120 };
-            0
-        } else if self.id
-            > self.last_opponent_input
-                + self.max_rollback
-                + self.delay.max(self.last_opponent_delay)
         {
-            //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
-            println!(
-                "frame is missing for reason 2: m: {m}, id: {}, confirm: {}",
-                self.id, self.last_opponent_confirm
-            );
-            unsafe { WARNING_FRAME_MISSING_2_COUNTDOWN = 120 };
-            0
-        } else {
-            //no pause, perform additional operations here
-
             //todo: consider moving to it's own function
             match self.past_frame_starts[self.id].clone() {
                 FrameTimeData::Empty => {
