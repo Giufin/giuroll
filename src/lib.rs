@@ -109,7 +109,10 @@ macro_rules! println {
 }
 
 use winapi::{
-    shared::d3d9types::{D3DCOLOR, D3DCOLOR_ARGB},
+    shared::{
+        d3d9::IDirect3DDevice9,
+        d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_ARGB, D3DRECT},
+    },
     um::{
         libloaderapi::GetModuleFileNameW,
         winuser::{MessageBoxW, MB_ICONERROR, MB_OK},
@@ -294,6 +297,9 @@ static mut REAL_INPUT2: Option<[bool; 10]> = None;
 static mut UPDATE: Option<SystemTime> = None;
 static mut TARGET: Option<u128> = None;
 
+static mut WARNING_FRAME_MISSING_1_COUNTDOWN: usize = 0;
+static mut WARNING_FRAME_MISSING_2_COUNTDOWN: usize = 0;
+static SOKU_LOOP_EVENT: Mutex<Option<isize>> = Mutex::new(None);
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
@@ -345,6 +351,7 @@ static mut OUTER_HALF_WIDTH: i32 = 60;
 
 static mut FREEZE_MITIGATION: bool = false;
 static mut ENABLE_CHECK_MODE: bool = false;
+static mut WARNING_WHEN_LAGGING: bool = true;
 
 static mut DISABLE_SOUND: bool = false;
 
@@ -506,6 +513,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
     let freeze_mitigation = read_ini_bool(&conf, "Netplay", "freeze_mitigation__", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
+    let warning_when_lagging = read_ini_bool(&conf, "Misc", "warning_when_lagging", true);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
     let enable_println = read_ini_bool(
         &conf,
@@ -585,10 +593,14 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let verstr: String = if f62_enabled {
+    let mut verstr: String = if f62_enabled {
         format!("{}CN", VER)
     } else {
         format!("{}", VER)
+    };
+    #[cfg(feature = "lowframetest")]
+    {
+        verstr += "-low_frame_test"
     };
     let mut title = read_ini_string(
         &conf,
@@ -635,6 +647,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         FREEZE_MITIGATION = freeze_mitigation;
         ENABLE_PRINTLN = enable_println;
         ENABLE_CHECK_MODE = enable_check_mode;
+        WARNING_WHEN_LAGGING = warning_when_lagging;
     }
 
     unsafe {
@@ -934,11 +947,43 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
+    static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
     unsafe extern "cdecl" fn drawnumbers(_a: *mut ilhook::x86::Registers, _b: usize) {
+        let d3d9_devic3 = 0x008A0E30 as *const *const IDirect3DDevice9;
+        let yellow = D3DCOLOR_ARGB(0xff, 0xff, 0xff, 0);
+        let red = D3DCOLOR_ARGB(0xff, 0xff, 0, 0);
+
+        WARNING_FRAME_MISSING_1_COUNTDOWN = WARNING_FRAME_MISSING_1_COUNTDOWN.saturating_sub(1);
         if let Some(x) = NEXT_DRAW_PING {
+            if WARNING_FRAME_MISSING_1_COUNTDOWN != 0
+                && WARNING_WHEN_LAGGING
+                && *SOKU_FRAMECOUNT >= 120
+            {
+                let outer = D3DRECT {
+                    x1: 320 - get_num_length(NEXT_DRAW_PING.unwrap_or(10), false) as i32,
+                    x2: 320,
+                    y1: 466,
+                    y2: 480,
+                };
+                (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
+            }
             draw_num((320.0, 466.0), x);
         }
+
+        WARNING_FRAME_MISSING_2_COUNTDOWN = WARNING_FRAME_MISSING_2_COUNTDOWN.saturating_sub(1);
         if let Some(x) = NEXT_DRAW_ROLLBACK {
+            if WARNING_FRAME_MISSING_2_COUNTDOWN != 0
+                && WARNING_WHEN_LAGGING
+                && *SOKU_FRAMECOUNT >= 120
+            {
+                let outer = D3DRECT {
+                    x1: 340 - get_num_length(NEXT_DRAW_ROLLBACK.unwrap_or(1), false) as i32,
+                    x2: 340,
+                    y1: 466,
+                    y2: 480,
+                };
+                (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
+            }
             draw_num((340.0, 466.0), x);
         }
 
@@ -946,6 +991,21 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             draw_num((20.0, 466.0), x);
         }
         render_replay_progress_bar(0 as _);
+
+        if WARNING_FRAME_LOST_COUNTDOWN.load(Relaxed) != 0
+            && WARNING_FRAME_LOST_COUNTDOWN.fetch_sub(1, Relaxed) != 0
+            && WARNING_WHEN_LAGGING
+            && *(0x8998b2 as *const bool) /* whether display fps */
+            && *SOKU_FRAMECOUNT >= 120
+        {
+            let outer = D3DRECT {
+                x1: 640 - get_num_length(60, false) as i32,
+                x2: 640,
+                y1: 466,
+                y2: 480,
+            };
+            (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, red, 0.0, 0);
+        }
     }
 
     let new =
@@ -1268,6 +1328,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 *target = cur + (target_frametime) as u128;
             } else {
             }
+            WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
         } else {
             WaitForSingleObject(waithandle as isize, ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
@@ -1278,6 +1339,14 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                     }
                 }
             }
+            if let Ok(event) = SOKU_LOOP_EVENT.lock() {
+                // if the last signal hasn't been reset by the loop
+                if let Some(event) = *event
+                    && WaitForSingleObject(event, 0) == 0
+                {
+                    WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
+                }
+            }
         };
     }
 
@@ -1286,6 +1355,33 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
     //hook.push(new);
+
+    static mut ORI_CLOSE_LOOP_EVENT: Option<unsafe extern "C" fn(isize) -> isize> = None;
+    static mut ORI_CREATE_LOOP_EVENT: Option<unsafe extern "C" fn() -> isize> = None;
+
+    unsafe extern "C" fn close_loop_event_override(handle: isize) -> isize {
+        if let Ok(mut event) = SOKU_LOOP_EVENT.lock() {
+            *event = None;
+        }
+        return ORI_CLOSE_LOOP_EVENT.unwrap()(handle);
+    }
+    unsafe extern "C" fn create_loop_event_override() -> isize {
+        let handle = ORI_CREATE_LOOP_EVENT.unwrap()();
+        if let Ok(mut event) = SOKU_LOOP_EVENT.lock() {
+            *event = Some(handle);
+        }
+        return handle;
+    }
+    unsafe {
+        ORI_CLOSE_LOOP_EVENT = Some(tamper_jmp_relative_opr(
+            0x408092 as *mut c_void,
+            close_loop_event_override as unsafe extern "C" fn(isize) -> isize,
+        ));
+        ORI_CREATE_LOOP_EVENT = Some(tamper_jmp_relative_opr(
+            0x407dec as *mut c_void,
+            create_loop_event_override as unsafe extern "C" fn() -> isize,
+        ));
+    }
 
     let new = unsafe {
         ilhook::x86::Hooker::new(
@@ -2161,6 +2257,27 @@ unsafe fn handle_online(
         let speed = netcoder.process_and_send(rollbacker, input);
 
         *cur_speed = speed;
+
+        #[cfg(feature = "lowframetest")]
+        {
+            let target_frametime: i32 = if F62_ENABLED {
+                1_000_000 / 62
+            } else {
+                1_000_000 / 60
+            };
+            use rand::{rngs::ThreadRng, Rng};
+            static mut RNG: Option<ThreadRng> = None;
+            if RNG.is_none() {
+                RNG = Some(rand::thread_rng());
+            }
+            // let delayed_target = (*target + target_frametime as u128 + 1000)
+            //     .saturating_sub(m.elapsed().unwrap().as_micros());
+            std::thread::sleep(Duration::from_micros(
+                RNG.as_mut()
+                    .unwrap()
+                    .gen_range(target_frametime * 3 / 4..=target_frametime) as u64,
+            ));
+        }
 
         if speed == 0 {
             pause(battle_state, state_sub_count);

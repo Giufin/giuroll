@@ -9,7 +9,8 @@ use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
 use crate::{
     input_to_accum, println, ptr_wrap, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED,
-    SOKU_FRAMECOUNT, TARGET_OFFSET,
+    SOKU_FRAMECOUNT, TARGET_OFFSET, WARNING_FRAME_MISSING_1_COUNTDOWN,
+    WARNING_FRAME_MISSING_2_COUNTDOWN,
 };
 
 #[derive(Clone, Debug)]
@@ -514,6 +515,7 @@ impl Netcoder {
                 "frame is missing: m: {m}, id: {}, confirm: {}",
                 self.id, self.last_opponent_confirm
             );
+            unsafe { WARNING_FRAME_MISSING_1_COUNTDOWN = 120 };
             0
         } else if self.id
             > self.last_opponent_input
@@ -525,6 +527,7 @@ impl Netcoder {
                 "frame is missing for reason 2: m: {m}, id: {}, confirm: {}",
                 self.id, self.last_opponent_confirm
             );
+            unsafe { WARNING_FRAME_MISSING_2_COUNTDOWN = 120 };
             0
         } else {
             //no pause, perform additional operations here
