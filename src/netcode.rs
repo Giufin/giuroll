@@ -579,10 +579,23 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
     }
 
     // Some mods such as InfiniteDecks hook the import table of Soku
-    let soku_sendto: unsafe extern "stdcall" fn(SOCKET, *const u8, i32, i32, *const SOCKADDR, i32) -> i32 =
-    std::mem::transmute(0x0081f6c4);
+    let soku_sendto: unsafe extern "stdcall" fn(
+        SOCKET,
+        *const u8,
+        i32,
+        i32,
+        *const SOCKADDR,
+        i32,
+    ) -> i32 = std::mem::transmute(0x0081f6c4);
 
-    let rse = soku_sendto(*ptr_wrap!(socket as *const SOCKET), data.as_ptr(), data.len() as _, 0, to, 0x10);
+    let rse = soku_sendto(
+        *ptr_wrap!(socket as *const SOCKET),
+        data.as_ptr(),
+        data.len() as _,
+        0,
+        to,
+        0x10,
+    );
 
     if rse == -1 {
         //to do, change error handling for sockets
@@ -618,10 +631,23 @@ pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
     }
 
     // Some mods such as InfiniteDecks hook the import table of Soku
-    let soku_sendto: unsafe extern "stdcall" fn(SOCKET, *const u8, i32, i32, *const SOCKADDR, i32) -> i32 =
-        std::mem::transmute(0x0081f6c4);
+    let soku_sendto: unsafe extern "stdcall" fn(
+        SOCKET,
+        *const u8,
+        i32,
+        i32,
+        *const SOCKADDR,
+        i32,
+    ) -> i32 = std::mem::transmute(0x0081f6c4);
 
-    let rse = soku_sendto(*ptr_wrap!(socket as *const SOCKET), data.as_ptr(), data.len() as _, 0, to, 0x10);
+    let rse = soku_sendto(
+        *ptr_wrap!(socket as *const SOCKET),
+        data.as_ptr(),
+        data.len() as _,
+        0,
+        to,
+        0x10,
+    );
 
     if rse == -1 {
         //to do, change error handling for sockets

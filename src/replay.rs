@@ -1,9 +1,9 @@
 use crate::{
-    soku_heap_free, draw_num_x_center, get_num_length, pause, println, ptr_wrap,
-    read_current_input, read_key_better, resume,
+    draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
+    read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
-    CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND, ENABLE_CHECK_MODE,
-    INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
+    soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
+    ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
     OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
     TAKEOVER_COLOR,
@@ -652,64 +652,6 @@ pub unsafe fn handle_replay(
                     override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
                 }
             }
-            // CheckStep::TestRollback(being_tested_frame, cur_rollback) => {
-            //     if *SOKU_FRAMECOUNT >= check.check_data.len() {
-            //         println!(
-            //             "Step 3 got more frame then {} got by step 1, at frame {}.",
-            //             *SOKU_FRAMECOUNT + 1,
-            //             *SOKU_FRAMECOUNT
-            //         );
-            //         check_failed();
-            //     } else if check.check_data[*SOKU_FRAMECOUNT] != CheckData::from_battle() {
-            //         println!("Step 3 has different at frame {}.", *SOKU_FRAMECOUNT);
-            //         check_failed();
-            //     } else if is_over {
-            //         if *SOKU_FRAMECOUNT + 1 < check.check_data.len() {
-            //             println!("Step 3 ends too early at frame {}.", *SOKU_FRAMECOUNT);
-            //             check_failed();
-            //         } else {
-            //             println!("All tests passed!");
-            //             CHECK = None;
-            //         }
-            //     } else {
-            //         // println!("{}", *SOKU_FRAMECOUNT);
-            //         if *SOKU_FRAMECOUNT as u32 == being_tested_frame {
-            //             if being_tested_frame % 300 == 0 {
-            //                 println!("{} / {}", being_tested_frame + 1, check.check_data.len());
-            //                 println!("{:?}", check.check_data[*SOKU_FRAMECOUNT]);
-            //             };
-            //             if cur_rollback == DEFAULT_TESTED_MAX_ROLLBACK {
-            //                 let mut map = FRAMES.lock().unwrap();
-            //                 assert_eq!(map.len() + 1, *SOKU_FRAMECOUNT);
-            //                 let back_frame = match DEFAULT_TESTED_MAX_ROLLBACK {
-            //                     1 => DEFAULT_TESTED_MAX_ROLLBACK,
-            //                     _ => DEFAULT_TESTED_MAX_ROLLBACK - 1,
-            //                 } as usize;
-            //                 let old_frame = &map[map.len() - back_frame];
-            //                 assert_eq!(old_frame.number, being_tested_frame as usize - back_frame);
-            //                 // println!("did_happen frame {} >>>", old_frame.number);
-            //                 old_frame.did_happen();
-            //                 // println!("did_happen frame {} <<<", old_frame.number);
-            //                 let i = map.len() - DEFAULT_TESTED_MAX_ROLLBACK as usize;
-            //                 map[i].allocs = Vec::new();
-            //                 map[i].frees = Vec::new();
-            //                 map[i].adresses = Vec::new().into_boxed_slice();
-            //                 map[i].number = 0xffffffff;
-            //             }
-            //             let (new_tested_frame, tested_rollback) = if cur_rollback <= 1 {
-            //                 (being_tested_frame + 1, DEFAULT_TESTED_MAX_ROLLBACK)
-            //             } else {
-            //                 (being_tested_frame, cur_rollback - 1)
-            //                 // (being_tested_frame + 1, DEFAULT_TESTED_MAX_ROLLBACK)
-            //             };
-            //             override_target_frame = Some(new_tested_frame - tested_rollback);
-            //             check.check_step =
-            //                 CheckStep::TestRollback(new_tested_frame, tested_rollback);
-            //             // println!("{:?}", check.check_step);
-            //         } else {
-            //             override_target_frame = Some(*SOKU_FRAMECOUNT as u32 + 1);
-            //         }
-            //     }
             CheckStep::TestRollback(being_tested_frame, cur_rollback, stepping) => {
                 // println!("{}", *SOKU_FRAMECOUNT);
                 if stepping
