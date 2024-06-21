@@ -353,6 +353,8 @@ static mut FREEZE_MITIGATION: bool = false;
 static mut ENABLE_CHECK_MODE: bool = false;
 static mut WARNING_WHEN_LAGGING: bool = true;
 
+static mut MAX_ROLLBACK_PREFERENCE: u8 = 6;
+
 static mut DISABLE_SOUND: bool = false;
 
 #[repr(C)]
@@ -501,6 +503,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     let inc = read_ini_int_hex(&conf, "Keyboard", "increase_delay_key", 0);
     let dec = read_ini_int_hex(&conf, "Keyboard", "decrease_delay_key", 0);
+    let rdec = read_ini_int_hex(&conf, "Keyboard", "decrease_max_rollback_key", 0x0a);
+    let rinc = read_ini_int_hex(&conf, "Keyboard", "increase_max_rollback_key", 0x0b);
     let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
     let exit_takeover = read_ini_int_hex(&conf, "Keyboard", "exit_takeover", 0x10);
     let p1_takeover = read_ini_int_hex(&conf, "Keyboard", "p1_takeover", 0x11);
@@ -513,6 +517,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let autodelay_enabled = read_ini_bool(&conf, "Netplay", "enable_auto_delay", true);
     let freeze_mitigation = read_ini_bool(&conf, "Netplay", "freeze_mitigation__", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
+    let max_rollback_preference =
+        read_ini_int_hex(&conf, "Netplay", "max_rollback_preference", 6).clamp(0, 15) as u8;
     let warning_when_lagging = read_ini_bool(&conf, "Misc", "warning_when_lagging", true);
     let soku2_compat_mode = read_ini_bool(&conf, "Misc", "soku2_compatibility_mode", false);
     let enable_println = read_ini_bool(
@@ -622,6 +628,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         SPIN_TIME_MICROSECOND = spin as i128;
         INCREASE_DELAY_KEY = inc as u8;
         DECREASE_DELAY_KEY = dec as u8;
+        INCREASE_MAX_ROLLBACK_KEY = rinc as u8;
+        DECREASE_MAX_ROLLBACK_KEY = rdec as u8;
         TOGGLE_STAT_KEY = net as u8;
         TAKEOVER_KEYS_SCHEME[0] = exit_takeover as u8;
         TAKEOVER_KEYS_SCHEME[1] = p1_takeover as u8;
@@ -648,6 +656,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         ENABLE_PRINTLN = enable_println;
         ENABLE_CHECK_MODE = enable_check_mode;
         WARNING_WHEN_LAGGING = warning_when_lagging;
+        MAX_ROLLBACK_PREFERENCE = max_rollback_preference;
     }
 
     unsafe {
@@ -954,20 +963,21 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let red = D3DCOLOR_ARGB(0xff, 0xff, 0, 0);
 
         WARNING_FRAME_MISSING_1_COUNTDOWN = WARNING_FRAME_MISSING_1_COUNTDOWN.saturating_sub(1);
+        // (**d3d9_devic3).drawText
         if let Some(x) = NEXT_DRAW_PING {
             if WARNING_FRAME_MISSING_1_COUNTDOWN != 0
                 && WARNING_WHEN_LAGGING
                 && *SOKU_FRAMECOUNT >= 120
             {
                 let outer = D3DRECT {
-                    x1: 320 - get_num_length(NEXT_DRAW_PING.unwrap_or(10), false) as i32,
-                    x2: 320,
+                    x1: 300 - get_num_length(NEXT_DRAW_PING.unwrap_or(10), false) as i32,
+                    x2: 300,
                     y1: 466,
                     y2: 480,
                 };
                 (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
             }
-            draw_num((320.0, 466.0), x);
+            draw_num((300.0, 466.0), x);
         }
 
         WARNING_FRAME_MISSING_2_COUNTDOWN = WARNING_FRAME_MISSING_2_COUNTDOWN.saturating_sub(1);
@@ -977,14 +987,17 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 && *SOKU_FRAMECOUNT >= 120
             {
                 let outer = D3DRECT {
-                    x1: 340 - get_num_length(NEXT_DRAW_ROLLBACK.unwrap_or(1), false) as i32,
-                    x2: 340,
+                    x1: 325 - get_num_length(NEXT_DRAW_ROLLBACK.unwrap_or(1), false) as i32,
+                    x2: 325,
                     y1: 466,
                     y2: 480,
                 };
                 (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
             }
-            draw_num((340.0, 466.0), x);
+            draw_num((325.0, 466.0), x);
+            if let Some(netcoder) = NETCODER.as_ref() {
+                draw_num((350.0, 466.0), netcoder.max_rollback as i32);
+            }
         }
 
         if let Some(x) = NEXT_DRAW_ENEMY_DELAY {
@@ -1010,6 +1023,58 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     let new =
         unsafe { ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(drawnumbers), 0).hook(7) };
+    std::mem::forget(new);
+
+    unsafe fn my_cselect_on_process(
+        origin: unsafe extern "thiscall" fn(*mut c_void) -> usize,
+        this_: *mut c_void,
+    ) -> usize {
+        static mut MAX_ROLLBACK_KEY_PRESSED: bool = false;
+        if read_key_better(DECREASE_MAX_ROLLBACK_KEY) {
+            if !MAX_ROLLBACK_KEY_PRESSED {
+                MAX_ROLLBACK_PREFERENCE = MAX_ROLLBACK_PREFERENCE.saturating_sub(1).clamp(0, 15);
+            }
+            MAX_ROLLBACK_KEY_PRESSED = true;
+        } else if read_key_better(INCREASE_MAX_ROLLBACK_KEY) {
+            if !MAX_ROLLBACK_KEY_PRESSED {
+                MAX_ROLLBACK_PREFERENCE = MAX_ROLLBACK_PREFERENCE.saturating_add(1).clamp(0, 15);
+            }
+            MAX_ROLLBACK_KEY_PRESSED = true;
+        } else {
+            MAX_ROLLBACK_KEY_PRESSED = false;
+        }
+        origin(this_)
+    }
+    static mut ORI_CSELECT_CL_ON_PROCESS: Option<
+        unsafe extern "thiscall" fn(*mut c_void) -> usize,
+    > = None;
+    static mut ORI_CSELECT_SV_ON_PROCESS: Option<
+        unsafe extern "thiscall" fn(*mut c_void) -> usize,
+    > = None;
+    unsafe extern "thiscall" fn my_cselect_cl_on_process(this_: *mut c_void) -> usize {
+        my_cselect_on_process(ORI_CSELECT_CL_ON_PROCESS.unwrap(), this_)
+    }
+    unsafe extern "thiscall" fn my_cselect_sv_on_process(this_: *mut c_void) -> usize {
+        my_cselect_on_process(ORI_CSELECT_SV_ON_PROCESS.unwrap(), this_)
+    }
+    unsafe {
+        ORI_CSELECT_SV_ON_PROCESS = Some(tamper_memory(
+            0x8574e0 as *mut unsafe extern "thiscall" fn(*mut c_void) -> usize,
+            my_cselect_sv_on_process,
+        ));
+        ORI_CSELECT_CL_ON_PROCESS = Some(tamper_memory(
+            0x857538 as *mut unsafe extern "thiscall" fn(*mut c_void) -> usize,
+            my_cselect_cl_on_process,
+        ));
+    }
+
+    unsafe extern "cdecl" fn render_number_on_select(_a: *mut ilhook::x86::Registers, _b: usize) {
+        draw_num((320.0, 466.0 - 16.0), MAX_ROLLBACK_PREFERENCE as i32);
+    }
+
+    let new = unsafe {
+        ilhook::x86::Hooker::new(0x42158f, HookType::JmpBack(render_number_on_select), 0).hook(5)
+    };
     std::mem::forget(new);
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
@@ -1796,7 +1861,11 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     let packet_pointer = esp + 0x70;
     let slic = std::slice::from_raw_parts_mut(packet_pointer as *mut u8, 400);
-    let type1 = slic[0];
+    let len = (*a).eax;
+    let type1 = match len > 0 {
+        true => slic[0],
+        false => 0,
+    };
     let type2 = slic[1];
 
     let count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
@@ -1840,7 +1909,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
         let m = DISABLE_SEND.load(Relaxed);
 
         if BATTLE_STARTED {
-            let z = NetworkPacket::decode(slic);
+            let z = NetworkPacket::decode(&slic[0..len as usize]);
             DATA_SENDER
                 .as_ref()
                 .unwrap()
@@ -2099,6 +2168,9 @@ static mut ESC2: AtomicU8 = AtomicU8::new(0);
 static mut INCREASE_DELAY_KEY: u8 = 0;
 static mut DECREASE_DELAY_KEY: u8 = 0;
 
+static mut INCREASE_MAX_ROLLBACK_KEY: u8 = 0;
+static mut DECREASE_MAX_ROLLBACK_KEY: u8 = 0;
+
 static mut TOGGLE_STAT_KEY: u8 = 0;
 
 static mut TAKEOVER_KEYS_SCHEME: [u8; 4] = [0, 0, 0, 0];
@@ -2197,7 +2269,7 @@ unsafe fn handle_online(
         let rollbacker = Rollbacker::new();
 
         ROLLBACKER = Some(rollbacker);
-        let mut netcoder = Netcoder::new(m);
+        let mut netcoder = Netcoder::new(m, MAX_ROLLBACK_PREFERENCE);
         if round == 1 {
             netcoder.autodelay_enabled = if AUTODELAY_ENABLED {
                 Some(AUTODELAY_ROLLBACK)

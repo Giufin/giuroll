@@ -25,6 +25,8 @@ pub struct NetworkPacket {
     //confirms: Vec<bool>,
     last_confirm: usize,
     sync: Option<i32>,
+
+    initial_max_rollback: Option<u8>,
 }
 
 impl NetworkPacket {
@@ -47,7 +49,12 @@ impl NetworkPacket {
         let next = next + 4;
 
         buf[next..next + 4].copy_from_slice(&self.sync.unwrap_or(i32::MAX).to_le_bytes());
-        let last = next + 4;
+        let mut last = next + 4;
+
+        if let Some(initial_max_rollback) = self.initial_max_rollback {
+            buf[last] = initial_max_rollback;
+            last += 1;
+        }
 
         buf[0..last].to_vec().into_boxed_slice()
     }
@@ -72,6 +79,9 @@ impl NetworkPacket {
             x => Some(x),
         };
 
+        let lastend = lastend + 4 as usize;
+        let initial_max_rollback = (d.len() > lastend).then(|| d[lastend]);
+
         Self {
             id,
             desyncdetect,
@@ -80,6 +90,7 @@ impl NetworkPacket {
             inputs,
             last_confirm,
             sync,
+            initial_max_rollback,
         }
     }
 }
@@ -110,6 +121,8 @@ pub struct Netcoder {
     pub max_rollback: usize,
     pub display_stats: bool,
     pub last_opponent_delay: usize,
+    pub initial_opponent_max_rollback: Option<usize>,
+    pub initial_my_max_rollback: usize,
 
     past_frame_starts: Vec<FrameTimeData>,
 
@@ -125,7 +138,10 @@ pub struct Netcoder {
 
 /// The packets are only sent once per frame; a packet contains all previous unconfirmed inputs; a lost "main" packet is not recovered whenever it's not neccesseary
 impl Netcoder {
-    pub fn new(receiver: std::sync::mpsc::Receiver<(NetworkPacket, Instant)>) -> Self {
+    pub fn new(
+        receiver: std::sync::mpsc::Receiver<(NetworkPacket, Instant)>,
+        my_max_rollback: u8,
+    ) -> Self {
         Self {
             last_opponent_confirm: 0,
             inputs: Vec::new(),
@@ -139,8 +155,10 @@ impl Netcoder {
             last_opponent_input: 0,
             id: 0,
             delay: 0,
-            max_rollback: 0,
+            max_rollback: 6,
             display_stats: false,
+            initial_opponent_max_rollback: None,
+            initial_my_max_rollback: my_max_rollback as usize,
 
             past_frame_starts: Vec::new(),
             receiver,
@@ -327,6 +345,40 @@ impl Netcoder {
                 }
             }
 
+            if let Some(initial_opponent_max_rollback) = packet.initial_max_rollback {
+                // Given values choosen by p1 and p2, the max_rollback actually used will be:
+                // - 6, if one of them is greater then 6 (the old default value), and the other
+                //      is less then 6,
+                // - the one nearset to 6, otherwise.
+                //
+                // Assuming all preferences of max rollback are single peaked, it can be proved
+                // that, if the game automatically sets a max rollback by a binary function (f)
+                // with rollbacks chosen by p1 and p2 (denoted as n1 and n2) as arguments, the
+                // one used here is the only one that satisfies all the following:
+                // 1. unanimous consent: f(n, n) = n;
+                // 2. symmetry: f(n1, n2) = f(n2, n1);
+                // 3. Pareto improvement to the default 6: f(n1, n2) is always not worse than 6
+                //    for any player who likes n1 rollbacks most;
+                // 4. Nash equilibrium: with rollback set by the opponent fixed, choosing the
+                //    favorite rollback will always lead to the best result for a player;
+                // 5. Pareto optimality: it is impossible that they dishonestly choose different
+                //    rollbacks and finally get a result which is better for both of them;
+                // 6. min(n1, n2) <= f(n1, n2) <= max(n1, n2).
+                let initial_opponent_max_rollback = initial_opponent_max_rollback as usize;
+                self.initial_opponent_max_rollback = Some(initial_opponent_max_rollback);
+                let min = initial_opponent_max_rollback.min(self.initial_my_max_rollback);
+                let max = initial_opponent_max_rollback.max(self.initial_my_max_rollback);
+                self.max_rollback = if min < 6 && 6 < max {
+                    6
+                } else if max <= 6 {
+                    max
+                } else if min >= 6 {
+                    min
+                } else {
+                    panic!("should be unreachable! max {}, min {}", max, min)
+                };
+            }
+
             let latest = packet.id as usize; //last delay
             while self.opponent_inputs.len() <= latest as usize {
                 self.opponent_inputs.push(None);
@@ -390,8 +442,7 @@ impl Netcoder {
             true
         } else if self.id
             > self.last_opponent_input
-                + self.max_rollback
-                + self.delay.max(self.last_opponent_delay)
+                + (self.max_rollback + self.delay.max(self.last_opponent_delay)).min(15)
         {
             //crate::TARGET_OFFSET.fetch_add(1000 * m as i32, Relaxed);
             println!(
@@ -407,7 +458,10 @@ impl Netcoder {
             if let Some(old_to_be_sent) = self.old_to_be_sent.as_mut() {
                 old_to_be_sent.last_confirm =
                     (self.last_opponent_input).min(old_to_be_sent.id + 30);
-                unsafe { send_packet(old_to_be_sent.encode()) };
+                old_to_be_sent.max_rollback = self.max_rollback as u8;
+                unsafe {
+                    send_packet(old_to_be_sent.encode());
+                };
             }
             return 0;
         }
@@ -457,6 +511,7 @@ impl Netcoder {
             inputs: ivec,
             last_confirm: (self.last_opponent_input).min(self.id + 30),
             sync: past,
+            initial_max_rollback: (self.id <= 120).then_some(self.initial_my_max_rollback as u8),
         };
         self.old_to_be_sent = Some(to_be_sent.clone());
 
