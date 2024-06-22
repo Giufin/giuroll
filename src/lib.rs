@@ -1030,6 +1030,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         this_: *mut c_void,
     ) -> usize {
         static mut MAX_ROLLBACK_KEY_PRESSED: bool = false;
+        let ret = origin(this_);
+        if *((this_ as usize + 0x4f60) as *const i32) >= 1 {
+            // if in stage select
+            return ret;
+        }
         if read_key_better(DECREASE_MAX_ROLLBACK_KEY) {
             if !MAX_ROLLBACK_KEY_PRESSED {
                 MAX_ROLLBACK_PREFERENCE = MAX_ROLLBACK_PREFERENCE.saturating_sub(1).clamp(0, 15);
@@ -1043,7 +1048,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             MAX_ROLLBACK_KEY_PRESSED = false;
         }
-        origin(this_)
+        return ret;
     }
     static mut ORI_CSELECT_CL_ON_PROCESS: Option<
         unsafe extern "thiscall" fn(*mut c_void) -> usize,
@@ -1068,8 +1073,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         ));
     }
 
-    unsafe extern "cdecl" fn render_number_on_select(_a: *mut ilhook::x86::Registers, _b: usize) {
-        draw_num((320.0, 466.0 - 16.0), MAX_ROLLBACK_PREFERENCE as i32);
+    unsafe extern "cdecl" fn render_number_on_select(a: *mut ilhook::x86::Registers, _b: usize) {
+        if *(((*a).esi + 0x4f60) as *const i32) < 1 {
+            // if not in stage select
+            draw_num((320.0, 466.0), MAX_ROLLBACK_PREFERENCE as i32);
+        }
     }
 
     let new = unsafe {
