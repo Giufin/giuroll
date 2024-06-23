@@ -1074,8 +1074,10 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     unsafe extern "cdecl" fn render_number_on_select(a: *mut ilhook::x86::Registers, _b: usize) {
-        if *(((*a).esi + 0x4f60) as *const i32) < 1 {
-            // if not in stage select
+        let gametype_main = *(0x898688 as *const usize);
+        let is_netplay = *(0x8986a0 as *const usize) != 0;
+        let in_stage_select = *(((*a).esi + 0x4f60) as *const i32) >= 1;
+        if (gametype_main, is_netplay, in_stage_select) == (1, true, false) {
             draw_num((320.0, 466.0), MAX_ROLLBACK_PREFERENCE as i32);
         }
     }
