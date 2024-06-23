@@ -1,6 +1,6 @@
 use crate::{
-    draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
-    read_key_better, resume,
+    change_delay_from_keys, draw_num, draw_num_x_center, get_num_length, pause, println, ptr_wrap,
+    read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
     ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
@@ -115,11 +115,15 @@ pub unsafe extern "cdecl" fn apause(_a: *mut ilhook::x86::Registers, _b: usize) 
 
 static mut D3D9_DEVICE: *mut *mut IDirect3DDevice9 = 0x008A0E30 as *mut *mut IDirect3DDevice9;
 
-pub unsafe fn render_replay_progress_bar(this: *mut c_void) {
+pub unsafe fn render_replay_progress_bar_and_numbers() {
     let gametype_main = *(0x898688 as *const u32);
     let is_netplay = *(0x8986a0 as *const usize) != 0;
     // assert!(ORI_BATTLE_WATCH_ON_RENDER.is_some());
-    if is_netplay || gametype_main != 2 || RE_PLAY.is_none() {
+    if is_netplay || gametype_main != 2 {
+        return;
+    }
+
+    if RE_PLAY.is_none() {
         return;
     }
 

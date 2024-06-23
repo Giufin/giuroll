@@ -1003,7 +1003,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         if let Some(x) = NEXT_DRAW_ENEMY_DELAY {
             draw_num((20.0, 466.0), x);
         }
-        render_replay_progress_bar(0 as _);
+        render_replay_progress_bar_and_numbers();
 
         if WARNING_FRAME_LOST_COUNTDOWN.load(Relaxed) != 0
             && WARNING_FRAME_LOST_COUNTDOWN.fetch_sub(1, Relaxed) != 0
@@ -1774,7 +1774,8 @@ use core::sync::atomic::AtomicU8;
 use crate::{
     netcode::{send_packet, send_packet_untagged},
     replay::{
-        apause, clean_replay_statics, handle_replay, is_replay_over, render_replay_progress_bar,
+        apause, clean_replay_statics, handle_replay, is_replay_over,
+        render_replay_progress_bar_and_numbers,
     },
     rollback::CHARSIZEDATA,
 };
@@ -2260,6 +2261,22 @@ fn resume(battle_state: &mut u32) {
 }
 //        info!("GAMETYPE TRUE {}", *(0x89868c as *const usize));
 
+unsafe fn change_delay_from_keys(ori: usize) -> usize {
+    let k_up = read_key_better(INCREASE_DELAY_KEY);
+    let k_down = read_key_better(DECREASE_DELAY_KEY);
+
+    let last_up = LAST_DELAY_MANIP & 1 == 1;
+    let last_down = LAST_DELAY_MANIP & 2 == 2;
+    LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
+    if !last_up && k_up {
+        ori.saturating_add(1).clamp(0, 9)
+    } else if !last_down && k_down {
+        ori.saturating_sub(1)
+    } else {
+        ori
+    }
+}
+
 unsafe fn handle_online(
     framecount: usize,
     battle_state: &mut u32,
@@ -2315,25 +2332,9 @@ unsafe fn handle_online(
     LAST_TOGGLE = stat_toggle;
 
     if *cur_speed_iter == 0 {
-        let k_up = read_key_better(INCREASE_DELAY_KEY);
-        let k_down = read_key_better(DECREASE_DELAY_KEY);
+        LAST_DELAY_VALUE = change_delay_from_keys(LAST_DELAY_VALUE);
 
-        let last_up = LAST_DELAY_MANIP & 1 == 1;
-        let last_down = LAST_DELAY_MANIP & 2 == 2;
-
-        if !last_up && k_up {
-            if netcoder.delay < 9 {
-                netcoder.delay += 1;
-            }
-        }
-
-        if !last_down && k_down {
-            if netcoder.delay > 0 {
-                netcoder.delay -= 1;
-            }
-        }
-        LAST_DELAY_VALUE = netcoder.delay;
-        LAST_DELAY_MANIP = k_up as u8 + k_down as u8 * 2;
+        netcoder.delay = LAST_DELAY_VALUE;
 
         let input = read_current_input();
         let speed = netcoder.process_and_send(rollbacker, input);
