@@ -1216,6 +1216,7 @@ impl Frame {
         extra_allocs: Option<impl Iterator<Item = usize>>,
         extra_frees: Option<impl Iterator<Item = usize>>,
     ) {
+        assert_ne!(self.number, 0);
         assert!(!self.has_called_never_happened);
         unsafe {
             FPST = self.fp;
