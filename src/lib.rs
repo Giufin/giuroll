@@ -4,8 +4,9 @@
 #![feature(coroutines)]
 #![feature(iter_from_coroutine)]
 #![feature(anonymous_lifetime_in_impl_trait)]
+#![feature(panic_update_hook)]
 
-use core::panic;
+use std::panic;
 use std::{
     any::type_name,
     collections::{BTreeSet, HashMap},
@@ -36,17 +37,18 @@ use netcode::{Netcoder, NetworkPacket};
 //use notify::{RecursiveMode, Watcher};
 use rollback::{Rollbacker, DUMP_FRAME_TIME, LAST_M_LEN};
 use sound::RollbackSoundManager;
-use windows::{
-    imp::{HeapAlloc, HeapFree, WaitForSingleObject},
-    Win32::{
-        Foundation::{GetLastError, HMODULE, HWND, TRUE},
-        Networking::WinSock::{closesocket, SOCKADDR, SOCKET},
-        System::{
-            Console::AllocConsole,
-            Memory::{
-                VirtualProtect, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
-            },
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+use windows::Win32::System::Memory::HEAP_FLAGS;
+use windows::Win32::{
+    Foundation::{GetLastError, HMODULE, HWND},
+    Networking::WinSock::{closesocket, SOCKADDR, SOCKET},
+    System::{
+        Memory::{
+            HeapAlloc, HeapFree, VirtualProtect, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
         },
+        Threading::WaitForSingleObject,
     },
 };
 
@@ -108,33 +110,26 @@ macro_rules! println {
     }};
 }
 
-use winapi::{
-    shared::{
-        d3d9::IDirect3DDevice9,
-        d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_ARGB, D3DRECT},
-    },
-    um::{
-        libloaderapi::GetModuleFileNameW,
-        winuser::{MessageBoxW, MB_ICONERROR, MB_OK},
-    },
+use winapi::shared::{
+    d3d9::IDirect3DDevice9,
+    d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_ARGB, D3DRECT},
 };
 
-pub fn warning_box(text: &str, title: &str) {
+fn warning_box(text: &str, title: &str) {
+    let to_utf_16 = |s: &str| PCWSTR(s.encode_utf16().chain([0]).collect::<Vec<u16>>().as_ptr());
     unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
         MessageBoxW(
-            null_mut(),
-            [text.encode_utf16().collect::<Vec<u16>>(), vec![0 as u16]]
-                .concat()
-                .as_ptr(),
-            [title.encode_utf16().collect::<Vec<u16>>(), vec![0 as u16]]
-                .concat()
-                .as_ptr(),
+            HWND(0),
+            to_utf_16(text),
+            to_utf_16(title),
             MB_OK | MB_ICONERROR,
         );
     }
 }
 
-pub fn pointer_debug_str<T>(p: *const T) -> String {
+#[allow(unused)]
+fn pointer_debug_str<T>(p: *const T) -> String {
     return format!(
         "The alignment is {} ({}); the address is {:#010x}.",
         align_of::<T>(),
@@ -145,28 +140,21 @@ pub fn pointer_debug_str<T>(p: *const T) -> String {
 
 #[macro_export]
 macro_rules! ptr_wrap {
-    ($src:expr) => {
-        ($src)
-        // match ($src) {
-        //     src_ => {
-        //         use crate::{pointer_debug_str, warning_box};
-        //         if !src_.is_aligned() {
-        //             warning_box(
-        //                 format!(
-        //                     "Unaligned pointer at {}:{} :\n{}",
-        //                     file!(),
-        //                     line!(),
-        //                     pointer_debug_str(src_)
-        //                 )
-        //                 .as_str(),
-        //                 "Unaligned pointer!",
-        //             );
-        //             panic!();
-        //         }
-        //         src_
-        //     }
-        // }
-    };
+    ($src:expr) => {{
+        match ($src) {
+            src_ => {
+                // use crate::pointer_debug_str;
+                // assert!(
+                //     src_.is_aligned(),
+                //     "Pointer unaligned at {} {} : {}",
+                //     file!(),
+                //     line!(),
+                //     pointer_debug_str(src_)
+                // );
+                src_
+            }
+        }
+    }};
 }
 
 static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
@@ -174,15 +162,13 @@ static HOOK: Mutex<Option<Box<[HookPoint]>>> = Mutex::new(None);
 unsafe fn tamper_memory<T: Sized>(dst: *mut T, src: T) -> T {
     let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
     assert_ne!(std::mem::size_of::<T>(), 0);
-    assert_eq!(
-        VirtualProtect(
-            dst as *const c_void,
-            std::mem::size_of::<T>(),
-            PAGE_EXECUTE_READWRITE,
-            std::ptr::addr_of_mut!(old_prot_ptr),
-        ),
-        TRUE,
-    );
+    VirtualProtect(
+        dst as *const c_void,
+        std::mem::size_of::<T>(),
+        PAGE_EXECUTE_READWRITE,
+        std::ptr::addr_of_mut!(old_prot_ptr),
+    )
+    .unwrap();
     let ori = dst.read_unaligned();
     dst.write_unaligned(src);
     VirtualProtect(
@@ -208,15 +194,13 @@ unsafe fn tamper_jmp_relative_opr<T: Sized>(dst: *mut c_void, src: T) -> T {
     let end = (dst as usize).wrapping_add(1 + std::mem::size_of::<usize>());
     assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<usize>());
     let ret = jmp_relative_opt_to_pointer(dst);
-    assert_eq!(
-        VirtualProtect(
-            p_offset as *const c_void,
-            std::mem::size_of::<usize>(),
-            PAGE_EXECUTE_READWRITE,
-            std::ptr::addr_of_mut!(old_prot_ptr),
-        ),
-        TRUE,
-    );
+    VirtualProtect(
+        p_offset as *const c_void,
+        std::mem::size_of::<usize>(),
+        PAGE_EXECUTE_READWRITE,
+        std::ptr::addr_of_mut!(old_prot_ptr),
+    )
+    .unwrap();
     p_offset.write_unaligned((std::mem::transmute_copy::<T, usize>(&src)).wrapping_sub(end));
     VirtualProtect(
         p_offset as *const c_void,
@@ -262,13 +246,7 @@ pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
 #[no_mangle]
 pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
     let mut dat = [0u16; 1025];
-    unsafe {
-        GetModuleFileNameW(
-            std::mem::transmute(dllmodule),
-            &mut dat as *mut u16 as *mut u16,
-            1024,
-        )
-    };
+    unsafe { GetModuleFileNameW(dllmodule, &mut dat) };
 
     let s = std::ffi::OsString::from_wide(&dat);
 
@@ -423,6 +401,19 @@ pub fn force_sound_skip(soundid: usize) {
 
 //returns None on .ini errors
 fn truer_exec(filename: PathBuf) -> Option<()> {
+    panic::update_hook(|prev, info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            format!("{s:?}")
+        } else if let Some(s) = info.payload().downcast_ref::<&String>() {
+            format!("{s:?}")
+        } else {
+            "Panic!".to_string()
+        };
+        let backtrace = format!("{:}", std::backtrace::Backtrace::force_capture());
+        warning_box((payload + "\nbacktrace:\n" + &backtrace).as_str(), "Panic!");
+        prev(info);
+    });
+
     #[cfg(feature = "allocconsole")]
     unsafe {
         AllocConsole();
@@ -1405,7 +1396,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             }
             WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
         } else {
-            WaitForSingleObject(waithandle as isize, ddiff as u32);
+            WaitForSingleObject(HANDLE(waithandle as isize), ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
                 loop {
                     let r1 = m.elapsed().unwrap().as_micros();
@@ -1417,7 +1408,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             if let Ok(event) = SOKU_LOOP_EVENT.lock() {
                 // if the last signal hasn't been reset by the loop
                 if let Some(event) = *event
-                    && WaitForSingleObject(event, 0) == 0
+                    && WaitForSingleObject(HANDLE(event), 0).0 == 0
                 {
                     WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
                 }
@@ -1525,31 +1516,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
         std::mem::forget(new);
 
-        let p_call_inst = 0x0041dae5 as *mut u8;
-        let mut old_prot_ptr: PAGE_PROTECTION_FLAGS = PAGE_PROTECTION_FLAGS(0);
         unsafe {
-            let p_call_offset = p_call_inst.offset(1) as *mut u32;
-            ORI_RECVFROM = Some(std::mem::transmute(
-                p_call_inst as u32 + 5 + p_call_offset.read_unaligned(),
-            ));
-            assert_eq!(
-                VirtualProtect(
-                    p_call_offset as *const c_void,
-                    4,
-                    PAGE_EXECUTE_READWRITE,
-                    std::ptr::addr_of_mut!(old_prot_ptr),
-                ),
-                TRUE,
-            );
-            p_call_offset
-                .write_unaligned(recvfrom_with_fake_packet as u32 - (p_call_inst as u32 + 5));
-            VirtualProtect(
-                p_call_offset as *const c_void,
-                4,
-                old_prot_ptr,
-                std::ptr::addr_of_mut!(old_prot_ptr),
-            );
-        }
+            tamper_jmp_relative_opr(
+                0x0041dae5 as *mut c_void,
+                recvfrom_with_fake_packet as unsafe extern "stdcall" fn(_, _, _, _, _, _) -> _,
+            )
+        };
     }
 
     // disable x in replay 0x4826b5
@@ -1638,14 +1610,17 @@ static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 #[macro_export]
 macro_rules! soku_heap_free {
     ($ptr:expr) => {{
-        use windows::{imp::HeapFree, Win32::Foundation::GetLastError};
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::Memory::{HeapFree, HEAP_FLAGS},
+        };
         let a: usize = $ptr;
-        assert_ne!(
-            HeapFree(*(0x89b404 as *const isize), 0, a as *const c_void),
-            0,
-            "HeapFree failed for {:?}",
-            GetLastError()
-        );
+        HeapFree(
+            HANDLE(*(0x89b404 as *const isize)),
+            HEAP_FLAGS(0),
+            Some(a as *const c_void),
+        )
+        .unwrap_or_else(|e| panic!("HeapFree failed for {:?}", e));
     }};
 }
 
@@ -1665,7 +1640,7 @@ unsafe extern "stdcall" fn heap_free_override(heap: isize, flags: u32, s: *const
         || GetCurrentThreadId() != REQUESTED_THREAD_ID.load(Relaxed)
         || *SOKU_FRAMECOUNT == 0
     {
-        return HeapFree(heap as isize, flags as u32, s);
+        return HeapFree(HANDLE(heap), HEAP_FLAGS(flags as u32), Some(s)).is_ok() as i32;
     }
 
     unsafe {
@@ -1723,7 +1698,7 @@ pub extern "cdecl" fn is_likely_desynced() -> bool {
 }
 
 unsafe extern "stdcall" fn heap_alloc_override(heap: isize, flags: u32, s: usize) -> *mut c_void {
-    let ret = HeapAlloc(heap, flags, s);
+    let ret = HeapAlloc(HANDLE(heap), HEAP_FLAGS(flags), s);
 
     if *(0x89b404 as *const usize) != heap as usize
         /*|| !matches!(*(0x8a0040 as *const u8), 0x5 | 0xe | 0xd)*/

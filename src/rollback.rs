@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use windows::Win32::System::Memory::HeapHandle;
+use windows::Win32::Foundation::HANDLE;
 
 use crate::{
     println, ptr_wrap, set_input_buffer, soku_heap_free, Callbacks, CALLBACK_ARRAY, ISDEBUG,
@@ -825,7 +825,7 @@ pub unsafe fn dump_frame(
 fn read_heap(pos: usize) -> usize {
     unsafe {
         windows::Win32::System::Memory::HeapSize(
-            *(0x89b404 as *const HeapHandle),
+            HANDLE(*(0x89b404 as *const isize)),
             windows::Win32::System::Memory::HEAP_FLAGS(0),
             pos as *const c_void,
         )
