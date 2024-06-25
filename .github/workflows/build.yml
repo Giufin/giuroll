@@ -9,9 +9,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2024-02-03
-          targets: i686-pc-windows-msvc
-      - run: cargo build --target i686-pc-windows-msvc --release --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"'
+          toolchain: nightly-2024-04-01
+          components: rust-src
+      - run: cargo build --target i686-win7-windows-msvc --release --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"' -Z build-std
       - run: |
           cp giuroll.ini target/i686-pc-windows-msvc/release/
           cp LICENSE target/i686-pc-windows-msvc/release/LICENSE.txt
