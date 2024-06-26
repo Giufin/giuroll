@@ -115,6 +115,7 @@ pub struct Netcoder {
 
     send_times: HashMap<usize, Instant>,
     recv_delays: HashMap<usize, Duration>,
+    real_rollback_to_be_showed: usize,
 
     pub delay: usize,
     pub max_rollback: usize,
@@ -149,6 +150,7 @@ impl Netcoder {
 
             send_times: HashMap::new(),
             recv_delays: HashMap::new(),
+            real_rollback_to_be_showed: 0,
 
             last_opponent_delay: 0,
             last_opponent_input: 0,
@@ -386,12 +388,9 @@ impl Netcoder {
 
             self.last_opponent_input = self.last_opponent_input.max(packet.id);
 
-            for a in self.last_opponent_confirm..packet.last_confirm {
-                let el = self.send_times.get(&a);
-                if let Some(&x) = el {
-                    let x = time.saturating_duration_since(x);
-                    self.recv_delays.insert(fr, x);
-                }
+            for a in (self.last_opponent_confirm + 1)..=packet.last_confirm {
+                let x = time.saturating_duration_since(*self.send_times.get(&a).unwrap());
+                self.recv_delays.insert(a, x);
             }
 
             self.last_opponent_confirm = self.last_opponent_confirm.max(packet.last_confirm);
@@ -429,6 +428,22 @@ impl Netcoder {
         // merge current input with the inputs from the time when the game was paused
         for (index, x) in current_input.into_iter().enumerate() {
             self.old_input[index] |= x;
+        }
+
+        unsafe {
+            if self.display_stats {
+                if self.id % 60 == 0 && self.id > 90 {
+                    let max = ((self.id - 90)..(self.id - 30))
+                        .map(|a| self.recv_delays.get(&a).unwrap().as_micros())
+                        .max()
+                        .unwrap();
+                    let max = (max / (1_000 * 2)) as i32;
+
+                    crate::NEXT_DRAW_PING = Some(max);
+                }
+            } else {
+                crate::NEXT_DRAW_PING = None;
+            }
         }
 
         let pause = if self.id > self.last_opponent_confirm + 30 {
@@ -536,25 +551,13 @@ impl Netcoder {
         //}
 
         unsafe {
-            let m2 = rollbacker.guessed.len();
-
-            if self.display_stats {
-                if self.id % 60 == 0 && self.id > 0 {
-                    let mut sum = 0;
-                    for a in (self.id - 60)..(self.id) {
-                        if let Some(x) = self.recv_delays.get(&a) {
-                            sum += x.as_micros();
-                        }
-                    }
-                    crate::NEXT_DRAW_PING = Some((sum / (60_000 * 2)) as i32);
-                    crate::NEXT_DRAW_ROLLBACK = Some(m2 as i32);
-                } else if crate::NEXT_DRAW_PING.is_none() {
-                    crate::NEXT_DRAW_PING = Some(0);
-                    crate::NEXT_DRAW_ROLLBACK = Some(m2 as i32);
-                }
-            } else {
-                crate::NEXT_DRAW_PING = None;
-                crate::NEXT_DRAW_ROLLBACK = None;
+            self.real_rollback_to_be_showed = rollbacker
+                .guessed
+                .len()
+                .max(self.real_rollback_to_be_showed);
+            if self.id % 60 == 0 {
+                crate::NEXT_DRAW_ROLLBACK = Some(self.real_rollback_to_be_showed as i32);
+                self.real_rollback_to_be_showed = 0;
             }
 
             if let Some(bias) = self.autodelay_enabled {
