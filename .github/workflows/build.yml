@@ -1,6 +1,10 @@
 name: build
 on: workflow_dispatch
 
+env:
+  CARGO_BUILD_TARGET: i686-win7-windows-msvc
+  PROFILE: release
+
 jobs:
   build:
     name: build
@@ -11,24 +15,24 @@ jobs:
         with:
           toolchain: nightly-2024-04-01
           components: rust-src
-      - run: cargo build --target i686-win7-windows-msvc --release --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"' -Z build-std
+      - run: cargo build --profile ${{env.PROFILE}} --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"' -Z build-std
       - run: |
-          cp giuroll.ini target/i686-pc-windows-msvc/release/
-          cp LICENSE target/i686-pc-windows-msvc/release/LICENSE.txt
+          cp giuroll.ini target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
+          cp LICENSE target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
           echo [InternetShortcut] > source-code-and-the-build.url
           # https://stackoverflow.com/a/70566764
           echo URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} >> source-code-and-the-build.url
-          cp source-code-and-the-build.url target/i686-pc-windows-msvc/release/
+          cp source-code-and-the-build.url target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
       - uses: actions/upload-artifact@v4
         with:
           name: Giuroll binary
           path: |
-            target/i686-pc-windows-msvc/release/giuroll.dll
-            target/i686-pc-windows-msvc/release/giuroll.ini
-            target/i686-pc-windows-msvc/release/LICENSE.txt
-            target/i686-pc-windows-msvc/release/source-code-and-the-build.url
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.ini
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
       - uses: actions/upload-artifact@v4
         with:
           name: Giuroll symbols (PDB)
           path: |
-            target/i686-pc-windows-msvc/release/giuroll.pdb
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
