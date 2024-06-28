@@ -928,6 +928,24 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
+    unsafe fn draw_block(device: *const IDirect3DDevice9, inner: &D3DRECT, color: D3DCOLOR) {
+        let border = D3DRECT {
+            x1: inner.x1.min(inner.x2) - 2,
+            x2: inner.x1.max(inner.x2) + 2,
+            y1: inner.y1.min(inner.y2) - 2,
+            y2: inner.y1.max(inner.y2) + 2,
+        };
+        (*device).Clear(
+            1,
+            &border,
+            D3DCLEAR_TARGET,
+            D3DCOLOR_ARGB(0xff, 0, 0, 0),
+            0.0,
+            0,
+        );
+        (*device).Clear(1, inner, D3DCLEAR_TARGET, color, 0.0, 0);
+    }
+
     static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
     unsafe extern "cdecl" fn drawnumbers(_a: *mut ilhook::x86::Registers, _b: usize) {
         let d3d9_devic3 = 0x008A0E30 as *const *const IDirect3DDevice9;
@@ -941,13 +959,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 && WARNING_WHEN_LAGGING
                 && *SOKU_FRAMECOUNT >= 120
             {
-                let outer = D3DRECT {
+                let inner = D3DRECT {
                     x1: 300 - get_num_length(NEXT_DRAW_PING.unwrap_or(10), false) as i32,
-                    x2: 300,
+                    x2: 300 + 2,
                     y1: 466,
-                    y2: 480,
+                    y2: 480 - 2,
                 };
-                (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
+                draw_block(*d3d9_devic3, &inner, yellow);
             }
             draw_num((300.0, 466.0), x);
         }
@@ -958,13 +976,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                 && WARNING_WHEN_LAGGING
                 && *SOKU_FRAMECOUNT >= 120
             {
-                let outer = D3DRECT {
+                let inner = D3DRECT {
                     x1: 325 - get_num_length(NEXT_DRAW_ROLLBACK.unwrap_or(1), false) as i32,
-                    x2: 325,
+                    x2: 325 + 2,
                     y1: 466,
-                    y2: 480,
+                    y2: 480 - 2,
                 };
-                (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, yellow, 0.0, 0);
+                draw_block(*d3d9_devic3, &inner, yellow);
             }
             draw_num((325.0, 466.0), x);
             if let Some(netcoder) = NETCODER.as_ref() {
@@ -983,13 +1001,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             && *(0x8998b2 as *const bool) /* whether display fps */
             && *SOKU_FRAMECOUNT >= 120
         {
-            let outer = D3DRECT {
+            let inner = D3DRECT {
                 x1: 640 - get_num_length(60, false) as i32,
-                x2: 640,
+                x2: 640 + 2,
                 y1: 466,
-                y2: 480,
+                y2: 480 - 2,
             };
-            (**d3d9_devic3).Clear(1, &outer, D3DCLEAR_TARGET, red, 0.0, 0);
+            draw_block(*d3d9_devic3, &inner, red);
         }
     }
 
@@ -1003,6 +1021,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     ) -> usize {
         static mut MAX_ROLLBACK_KEY_PRESSED: bool = false;
         let ret = origin(this_);
+        if !matches!(ret, 8 | 9) {
+            // switch to other scene.
+            NEXT_DRAW_PING = None;
+            *SELECT_SCENE_INPUT_SEND_TIME_DATA.lock().unwrap() = None;
+            return ret;
+        }
         if *((this_ as usize + 0x4f60) as *const i32) >= 1 {
             // if in stage select
             return ret;
@@ -1020,6 +1044,18 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         } else {
             MAX_ROLLBACK_KEY_PRESSED = false;
         }
+        let mut time_data = SELECT_SCENE_INPUT_SEND_TIME_DATA.lock().unwrap();
+        if time_data.is_none() {
+            *time_data = Some(P2SendTimeData {
+                has_received: false,
+                last_max_latency: None,
+                max_latency_to_be_shown: None,
+                last_receive_time: Instant::now(),
+                last_frame_id: 0,
+                last_shown_frame: 0,
+            });
+        }
+        update_toggle_stat_from_keys();
         return ret;
     }
     static mut ORI_CSELECT_CL_ON_PROCESS: Option<
@@ -1049,8 +1085,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let gametype_main = *(0x898688 as *const usize);
         let is_netplay = *(0x8986a0 as *const usize) != 0;
         let in_stage_select = *(((*a).esi + 0x4f60) as *const i32) >= 1;
-        if (gametype_main, is_netplay, in_stage_select) == (1, true, false) {
-            draw_num((320.0, 466.0), MAX_ROLLBACK_PREFERENCE as i32);
+        if (gametype_main, is_netplay, in_stage_select, TOGGLE_STAT) == (1, true, false, true) {
+            draw_num((330.0, 466.0), MAX_ROLLBACK_PREFERENCE as i32);
+            if let Some(time_data) = SELECT_SCENE_INPUT_SEND_TIME_DATA.lock().unwrap().as_ref()
+                && let Some(max_latency_to_show) = time_data.max_latency_to_be_shown
+            {
+                draw_num((300.0, 466.0), max_latency_to_show.as_millis() as i32);
+            }
         }
     }
 
@@ -1445,6 +1486,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let packet_size = *(((*a).edi + 0x18) as *const usize);
         let buf = std::slice::from_raw_parts(ptr, 400);
 
+        update_input_time_data(buf, packet_size, true);
+
+        if !FREEZE_MITIGATION {
+            return;
+        }
         // Ensure we don't assign the GAME_REQUEST packet for spectators to LAST_GAME_REQUEST.
         if buf[0] == if is_p1() { 13 } else { 14 } && buf[1] == 4 {
             if let Some(old_game_request) = LAST_GAME_REQUEST {
@@ -1488,15 +1534,15 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
+    std::mem::forget(new);
+
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
+    std::mem::forget(new);
+
     if freeze_mitigation {
-        let new =
-            unsafe { ilhook::x86::Hooker::new(0x4171b4, HookType::JmpBack(sniff_sent), 0).hook(5) };
-        std::mem::forget(new);
-
-        let new =
-            unsafe { ilhook::x86::Hooker::new(0x4171c7, HookType::JmpBack(sniff_sent), 0).hook(5) };
-        std::mem::forget(new);
-
         unsafe {
             tamper_jmp_relative_opr(
                 0x0041dae5 as *mut c_void,
@@ -1764,6 +1810,64 @@ unsafe extern "stdcall" fn recvfrom_with_fake_packet(
     panic!();
 }
 
+struct P2SendTimeData {
+    has_received: bool,
+    last_frame_id: usize,
+    last_receive_time: Instant,
+    last_max_latency: Option<Duration>,
+    max_latency_to_be_shown: Option<Duration>,
+    last_shown_frame: usize,
+}
+
+static SELECT_SCENE_INPUT_SEND_TIME_DATA: Mutex<Option<P2SendTimeData>> = Mutex::new(None);
+fn update_input_time_data(buf: &[u8], packet_size: usize, is_sending: bool) {
+    // https://github.com/delthas/touhou-protocol-docs/blob/master/protocol_123.md#game-packet-sub-type-0x03-game_input
+    // | 0d or 0e  03  FRAME_ID (4 bytes)  SCENE_ID (1 bytes)  FRAME_COUNT (1 byte)  INPUTS (2*FRAME_COUNT bytes) |
+    if packet_size >= 1 + 1 + 4 + 1 + 1 + 2
+        && matches!(buf[0], 0xe | 0xd)
+        && buf[1] == 0x3
+        && buf[6] == 0x3
+        && let Some(time_data) = SELECT_SCENE_INPUT_SEND_TIME_DATA.lock().unwrap().as_mut()
+    {
+        let input_count: u8 = buf[7];
+        let input_pair_count = input_count.div_ceil(2);
+        let frame_id_end: usize = u32::from_le_bytes(buf[2..2 + 4].try_into().unwrap()) as usize;
+        let frame_id: usize = frame_id_end + 1 - input_pair_count as usize;
+        // println!(
+        //     "{} send/recv {} {} {}",
+        //     buf[0], is_sending, frame_id, input_count
+        // );
+        if !is_sending && time_data.last_frame_id <= frame_id && !time_data.has_received {
+            // println!("really get {}", frame_id);
+            time_data.has_received = true;
+            time_data.last_frame_id = frame_id_end;
+            time_data.last_max_latency = Some(
+                (Instant::now().saturating_duration_since(time_data.last_receive_time) / 2)
+                    .max(time_data.last_max_latency.unwrap_or(Duration::ZERO)),
+            );
+            if frame_id > time_data.last_shown_frame + 60 {
+                time_data.max_latency_to_be_shown = time_data.last_max_latency;
+                time_data.last_shown_frame = frame_id;
+                time_data.last_max_latency = None;
+            }
+        }
+
+        if is_sending && time_data.has_received {
+            let to_get_frame_id = match buf[0] {
+                0xd => frame_id_end, // p1 is sending
+                0xe => frame_id + 1, // p2 is sending
+                _ => panic!("unreachable!"),
+            };
+            if time_data.last_frame_id < to_get_frame_id {
+                // println!("to get {}", to_get_frame_id);
+                time_data.has_received = false;
+                time_data.last_receive_time = Instant::now();
+                time_data.last_frame_id = to_get_frame_id;
+            }
+        }
+    }
+}
+
 unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usize) {
     const P1_PACKETS: [u8; 400] = [
         13, 3, 1, 0, 0, 0, 5, 2, 0, 0, 0, 0, 12, 0, 103, 0, 103, 0, 103, 0, 103, 0, 104, 0, 104, 0,
@@ -1820,6 +1924,8 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     //   let input2 = slic[9];
 
     //println!("{} , {}", &slic[0], &slic[1]);
+
+    update_input_time_data(slic, len as usize, false);
 
     if type1 == 0x6e {
         //opponent esc
@@ -2211,6 +2317,14 @@ unsafe fn change_delay_from_keys(ori: usize) -> usize {
     }
 }
 
+unsafe fn update_toggle_stat_from_keys() {
+    let stat_toggle = read_key_better(TOGGLE_STAT_KEY);
+    if stat_toggle && !LAST_TOGGLE {
+        TOGGLE_STAT = !TOGGLE_STAT;
+    }
+    LAST_TOGGLE = stat_toggle;
+}
+
 unsafe fn handle_online(
     framecount: usize,
     battle_state: &mut u32,
@@ -2257,13 +2371,9 @@ unsafe fn handle_online(
 
     resume(battle_state);
 
-    let stat_toggle = read_key_better(TOGGLE_STAT_KEY);
-    if stat_toggle && !LAST_TOGGLE {
-        TOGGLE_STAT = !TOGGLE_STAT;
-        netcoder.display_stats = TOGGLE_STAT;
-    }
+    update_toggle_stat_from_keys();
 
-    LAST_TOGGLE = stat_toggle;
+    netcoder.display_stats = TOGGLE_STAT;
 
     if *cur_speed_iter == 0 {
         LAST_DELAY_VALUE = change_delay_from_keys(LAST_DELAY_VALUE);
