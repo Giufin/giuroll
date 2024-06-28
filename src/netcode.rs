@@ -551,12 +551,17 @@ impl Netcoder {
         //}
 
         unsafe {
-            self.real_rollback_to_be_showed = rollbacker
-                .guessed
-                .len()
-                .max(self.real_rollback_to_be_showed);
-            if self.id % 60 == 0 {
-                crate::NEXT_DRAW_ROLLBACK = Some(self.real_rollback_to_be_showed as i32);
+            if self.display_stats {
+                self.real_rollback_to_be_showed = rollbacker
+                    .guessed
+                    .len()
+                    .max(self.real_rollback_to_be_showed);
+                if self.id % 60 == 0 {
+                    crate::NEXT_DRAW_ROLLBACK = Some(self.real_rollback_to_be_showed as i32);
+                    self.real_rollback_to_be_showed = 0;
+                }
+            } else {
+                crate::NEXT_DRAW_ROLLBACK = None;
                 self.real_rollback_to_be_showed = 0;
             }
 
