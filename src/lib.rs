@@ -5,6 +5,7 @@
 #![feature(iter_from_coroutine)]
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(panic_update_hook)]
+#![feature(panic_info_message)]
 // we should manually and carefully avoid undefined behavior about
 // references to and any borrowing of static mut variables.
 // shuold be solved before updating to 2024 edition?
@@ -120,13 +121,13 @@ use winapi::shared::{
 };
 
 fn warning_box(text: &str, title: &str) {
-    let to_utf_16 = |s: &str| PCWSTR(s.encode_utf16().chain([0]).collect::<Vec<u16>>().as_ptr());
+    let to_utf_16 = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
         MessageBoxW(
             HWND(0),
-            to_utf_16(text),
-            to_utf_16(title),
+            PCWSTR(to_utf_16(text).as_ptr()),
+            PCWSTR(to_utf_16(title).as_ptr()),
             MB_OK | MB_ICONERROR,
         );
     }
@@ -408,14 +409,24 @@ pub fn force_sound_skip(soundid: usize) {
 fn truer_exec(filename: PathBuf) -> Option<()> {
     panic::update_hook(|prev, info| {
         let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            format!("{s:?}")
+            format!("{s:}")
         } else if let Some(s) = info.payload().downcast_ref::<&String>() {
-            format!("{s:?}")
+            format!("{s:}")
+        } else if let Some(a) = info.message() {
+            format!("{}", a)
         } else {
-            "Panic!".to_string()
+            "panic without message".to_string()
         };
-        let backtrace = format!("{:}", std::backtrace::Backtrace::force_capture());
-        warning_box((payload + "\nbacktrace:\n" + &backtrace).as_str(), "Panic!");
+        let location = if let Some(l) = info.location() {
+            format!("{}", l)
+        } else {
+            "unknown".to_string()
+        };
+        // let backtrace = format!("{:}", std::backtrace::Backtrace::force_capture());
+        warning_box(
+            format!("{payload:}\nLocation: {location:}").as_str(),
+            "Panic!",
+        );
         prev(info);
     });
 
