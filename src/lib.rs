@@ -424,7 +424,16 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         };
         // let backtrace = format!("{:}", std::backtrace::Backtrace::force_capture());
         warning_box(
-            format!("{payload:}\nLocation: {location:}").as_str(),
+            format!(
+                "{}\n{}\n{payload:}\nLocation: {location:}",
+                "Giuroll was panicked, which may or may not be caused by Giuroll.",
+                concat!(
+                    "Your feedback is important! ",
+                    "Please take a screenshot and report the information to ",
+                    "@hagb_ in public hisoutensoku Discord groups."
+                )
+            )
+            .as_str(),
             "Panic!",
         );
         prev(info);
