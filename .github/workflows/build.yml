@@ -23,9 +23,12 @@ jobs:
           # https://stackoverflow.com/a/70566764
           echo URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} >> source-code-and-the-build.url
           cp source-code-and-the-build.url target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
+          $verstr = cargo run --example print-version --profile ${{env.PROFILE}} --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"' -Z build-std
+          $commit_id = git rev-parse --short HEAD
+          echo VERSION=${verstr}_${commit_id} >> $env:GITHUB_ENV
       - uses: actions/upload-artifact@v4
         with:
-          name: Giuroll binary
+          name: giuroll-${{ env.VERSION }}
           path: |
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.ini
@@ -33,6 +36,8 @@ jobs:
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
       - uses: actions/upload-artifact@v4
         with:
-          name: Giuroll symbols (PDB)
+          name: giuroll-pdb-${{ env.VERSION }}
           path: |
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
