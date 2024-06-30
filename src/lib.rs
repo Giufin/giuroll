@@ -2456,7 +2456,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
 
     match (gametype_main, is_netplay) {
         (2, false) => {
-            if framecount > 5 {
+            if framecount > 0 {
                 REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
             }
 
@@ -2472,7 +2472,7 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         (1, true) => {
             // 1 is netplay and v player
             // todo: detect v player
-            if framecount > 5 {
+            if framecount > 0 {
                 REQUESTED_THREAD_ID.store(GetCurrentThreadId(), Relaxed);
             } else {
                 if let Some(fake_battle_manager) = FAKE_BATTLE_MANAGER_FOR_TSK.as_mut() {
