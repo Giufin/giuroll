@@ -1108,7 +1108,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         let is_netplay = *(0x8986a0 as *const usize) != 0;
         let in_stage_select = *(((*a).esi + 0x4f60) as *const i32) >= 1;
         if (gametype_main, is_netplay, in_stage_select, TOGGLE_STAT) == (1, true, false, true) {
-            draw_num((330.0, 466.0), MAX_ROLLBACK_PREFERENCE as i32);
+            draw_num((300.0, 466.0 - 16.0), MAX_ROLLBACK_PREFERENCE as i32);
             if let Some(time_data) = SELECT_SCENE_INPUT_SEND_TIME_DATA.lock().unwrap().as_ref()
                 && let Some(max_latency_to_show) = time_data.max_latency_to_be_shown
             {
