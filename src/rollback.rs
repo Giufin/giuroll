@@ -306,6 +306,7 @@ impl RollFrame {
 }
 static mut FPST: [u8; 108] = [0u8; 108];
 pub static mut DUMP_FRAME_TIME: Option<Duration> = None;
+pub static mut MEMORY_LEAK: usize = 0;
 pub unsafe fn dump_frame(
     extra_allocs: Option<impl Iterator<Item = usize>>,
     extra_frees: Option<impl Iterator<Item = usize>>,
@@ -1141,6 +1142,14 @@ pub struct Frame {
     pub has_happened: bool,
 }
 
+impl Drop for Frame {
+    fn drop(&mut self) {
+        if !(self.has_called_never_happened || self.has_happened) {
+            println!("WARNING (fix me): this frame ({}) neither `did_happen` nor `never_happened`, so all its allocated memory leaks", self.number);
+        }
+    }
+}
+
 impl Frame {
     pub fn never_happened(&mut self) -> (HashSet<usize>, HashSet<usize>) {
         assert!(!self.has_happened);
@@ -1231,6 +1240,8 @@ impl Frame {
                 fpst = sym FPST
             )
         }
+        #[cfg(feature = "logrollback")]
+        println!("restore {}", self.number);
         let mut allocs: HashSet<usize> = HashSet::new();
         fn free_if_allocated(
             allocs: &mut HashSet<usize>,
@@ -1250,7 +1261,10 @@ impl Frame {
             }
         }
         if let Some(dropped_frames) = dropped_frames {
+            let mut last_frame = self.number;
             for f in dropped_frames {
+                assert!(last_frame < f.number);
+                last_frame = f.number;
                 let (_, __) = f.never_happened();
                 free_if_allocated(
                     &mut allocs,
@@ -1269,9 +1283,12 @@ impl Frame {
                 Some(MEMORY_RECEIVER_FREE.as_ref().unwrap().try_iter()),
             );
         }
-
-        #[cfg(feature = "logrollback")]
-        println!("restore {}", self.number);
+        unsafe {
+            MEMORY_LEAK += allocs
+                .into_iter()
+                .map(|x| read_heap(x).div_ceil(8) * 8)
+                .sum::<usize>()
+        };
 
         for a in self.extra_states.iter() {
             unsafe {

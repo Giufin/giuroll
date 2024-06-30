@@ -40,7 +40,7 @@ use mininip::datas::{Identifier, Value};
 use netcode::{Netcoder, NetworkPacket};
 
 //use notify::{RecursiveMode, Watcher};
-use rollback::{Rollbacker, DUMP_FRAME_TIME, LAST_M_LEN};
+use rollback::{Rollbacker, DUMP_FRAME_TIME, LAST_M_LEN, MEMORY_LEAK};
 use sound::RollbackSoundManager;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HANDLE;
@@ -865,6 +865,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         NEXT_DRAW_ROLLBACK = None;
         NEXT_DRAW_ENEMY_DELAY = None;
         DUMP_FRAME_TIME = None;
+        println!("Memory leak: {} bytes", MEMORY_LEAK);
+        MEMORY_LEAK = 0;
         LAST_M_LEN = 0;
     }
 
