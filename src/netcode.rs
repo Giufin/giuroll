@@ -429,17 +429,28 @@ impl Netcoder {
         for (index, x) in current_input.into_iter().enumerate() {
             self.old_input[index] |= x;
         }
+        let refresh_ping = || unsafe {
+            if self.display_stats && self.id > 90 {
+                let now = Instant::now();
+                let max = ((self.id - 90)..self.id)
+                    .map(|a| match self.recv_delays.get(&a) {
+                        Some(x) => x.as_millis(),
+                        None => now
+                            .saturating_duration_since(self.send_times[&a])
+                            .as_millis(),
+                    })
+                    .max()
+                    .unwrap();
+                let max = (max / 2) as i32;
+
+                crate::NEXT_DRAW_PING = Some(max);
+            }
+        };
 
         unsafe {
             if self.display_stats {
-                if self.id % 60 == 0 && self.id > 90 {
-                    let max = ((self.id - 90)..(self.id - 30))
-                        .map(|a| self.recv_delays.get(&a).unwrap().as_micros())
-                        .max()
-                        .unwrap();
-                    let max = (max / (1_000 * 2)) as i32;
-
-                    crate::NEXT_DRAW_PING = Some(max);
+                if self.id % 60 == 0 {
+                    refresh_ping();
                 }
             } else {
                 crate::NEXT_DRAW_PING = None;
@@ -452,7 +463,12 @@ impl Netcoder {
                 "frame is missing: id: {}, confirm: {}",
                 self.id, self.last_opponent_confirm
             );
-            unsafe { WARNING_FRAME_MISSING_1_COUNTDOWN = 120 };
+            unsafe {
+                WARNING_FRAME_MISSING_1_COUNTDOWN = 120;
+                if self.display_stats {
+                    refresh_ping();
+                }
+            }
             true
         } else if self.id
             > self.last_opponent_input
@@ -463,7 +479,16 @@ impl Netcoder {
                 "frame is missing for reason 2: id: {}, confirm: {}",
                 self.id, self.last_opponent_confirm
             );
-            unsafe { WARNING_FRAME_MISSING_2_COUNTDOWN = 120 };
+            unsafe {
+                WARNING_FRAME_MISSING_2_COUNTDOWN = 120;
+                if self.display_stats {
+                    refresh_ping();
+                    self.real_rollback_to_be_showed = self
+                        .real_rollback_to_be_showed
+                        .max(self.id - self.last_opponent_input - 1 - self.delay);
+                    crate::NEXT_DRAW_ROLLBACK = Some(self.real_rollback_to_be_showed as i32);
+                }
+            }
             true
         } else {
             false
