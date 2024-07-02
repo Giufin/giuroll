@@ -408,24 +408,9 @@ pub fn force_sound_skip(soundid: usize) {
 //returns None on .ini errors
 fn truer_exec(filename: PathBuf) -> Option<()> {
     panic::update_hook(|prev, info| {
-        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            format!("{s:}")
-        } else if let Some(s) = info.payload().downcast_ref::<&String>() {
-            format!("{s:}")
-        } else if let Some(a) = info.message() {
-            format!("{}", a)
-        } else {
-            "panic without message".to_string()
-        };
-        let location = if let Some(l) = info.location() {
-            format!("{}", l)
-        } else {
-            "unknown".to_string()
-        };
-        // let backtrace = format!("{:}", std::backtrace::Backtrace::force_capture());
         warning_box(
             format!(
-                "{}\n{}\n{payload:}\nLocation: {location:}",
+                "{}\n{}\n{info:}",
                 "Giuroll was panicked, which may or may not be caused by Giuroll.",
                 concat!(
                     "Your feedback is important! ",
