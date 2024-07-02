@@ -43,3 +43,15 @@ jobs:
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
+      - run: |
+          $Env:RUSTFLAGS = "-Ctarget-feature=+crt-static"
+          cargo build --profile ${{env.PROFILE}} --config profile.release.debug=true --config 'profile.release.split-debuginfo="packed"' --config 'profile.release.strip="none"' -Z build-std --features fillfree
+      - uses: actions/upload-artifact@v4
+        with:
+          name: giuroll-fillfree-${{ env.VERSION }}
+          path: |
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.ini
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
