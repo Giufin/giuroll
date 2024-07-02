@@ -20,7 +20,7 @@ lowframetest = ["dep:rand"]
 randomfillfree = ["dep:rand"]
 
 [dependencies.windows]
-version = "0.53.0"
+version = "0.57.0"
 features = [
     "Win32_System_Memory",
     "Win32_Networking_WinSock",
@@ -43,7 +43,7 @@ rand =  { version = "0.8.5", optional = true }
 
 [profile.release]
 strip = true
-rustflags = ["-C", "target-feature=+crt-static"]
+#rustflags = ["-C", "target-feature=+crt-static"]
 
 [package.metadata.winres]
 OriginalFilename = "giuroll.dll"
