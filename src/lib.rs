@@ -509,8 +509,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let rinc = read_ini_int_hex(&conf, "Keyboard", "increase_max_rollback_key", 0x0b);
     let net = read_ini_int_hex(&conf, "Keyboard", "toggle_network_stats", 0);
     let exit_takeover = read_ini_int_hex(&conf, "Keyboard", "exit_takeover", 0x10);
-    let p1_takeover = read_ini_int_hex(&conf, "Keyboard", "p1_takeover", 0x11);
-    let p2_takeover = read_ini_int_hex(&conf, "Keyboard", "p2_takeover", 0x12);
+    let p1_takeover = read_ini_int_hex(&conf, "Keyboard", "p1_takeover", 0x21);
+    let p2_takeover = read_ini_int_hex(&conf, "Keyboard", "p2_takeover", 0x22);
     let set_or_retry_takeover = read_ini_int_hex(&conf, "Keyboard", "set_or_retry_takeover", 0x13);
     let spin = read_ini_int_hex(&conf, "FramerateFix", "spin_amount", 1500);
     let f62_enabled = read_ini_bool(&conf, "FramerateFix", "enable_f62", cfg!(feature = "f62"));
