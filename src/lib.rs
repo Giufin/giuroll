@@ -1932,12 +1932,16 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
 
     let packet_pointer = esp + 0x70;
     let slic = std::slice::from_raw_parts_mut(packet_pointer as *mut u8, 400);
-    let len = (*a).eax;
+    let len: i32 = (*a).eax as i32;
     let type1 = match len > 0 {
         true => slic[0],
         false => 0,
     };
     let type2 = slic[1];
+
+    if len < 0 {
+        println!("WARNING: recvfrom returned error.");
+    }
 
     // let count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
     let sceneid = slic[6];
