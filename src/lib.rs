@@ -2398,7 +2398,7 @@ unsafe fn handle_online(
     netcoder.display_stats = TOGGLE_STAT;
 
     if *cur_speed_iter == 0 {
-        LAST_DELAY_VALUE = change_delay_from_keys(LAST_DELAY_VALUE);
+        LAST_DELAY_VALUE = change_delay_from_keys(netcoder.delay);
 
         netcoder.delay = LAST_DELAY_VALUE;
 

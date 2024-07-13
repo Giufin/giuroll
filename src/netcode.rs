@@ -600,8 +600,8 @@ impl Netcoder {
 
                     let (count, sum) = iter.fold((0, 0), |x, y| (x.0 + 1, x.1 + y));
                     let avg = sum / count;
-                    println!("avg: {}", avg);
-                    self.delay = ((avg / (1_000_000 / 30)) as i8 - bias).clamp(0, 9) as usize;
+                    self.delay = ((avg.div_ceil(1_000_000 / 30)) as i8 - bias).clamp(0, 9) as usize;
+                    println!("avg: {}, auto delay: {}", avg, self.delay);
                 }
             }
         }
