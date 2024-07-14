@@ -1,4 +1,4 @@
-# Giuroll  
+# A maintained and updated fork of [Giuroll](https://github.com/Giufinn/giuroll)
 
 Is a network rollback mod for 東方非想天則 / Touhou 12.3 Hisoutensoku, which aims to significantly improve the responsiveness of netplay, as well as introducing other rollback related improvements to replay mode.  
 
@@ -57,10 +57,13 @@ When building from source please remember to add the `--release`/`-r` flag.
 - Failed to connect: either player is using an incompatible version of giuroll, or is not using it at all.  
 - Game desynced: I'm planning on adding a desync detector to make debugging desyncs easier, but since desyncs also occur with SokuRoll there is no guarantee they are caused solely by the rollback. If the desyncs are common, persists between game restarts, and are not appearing with Sokuroll, you can contact me about it.
 
-
-you can contact me about any issues through discord: `@giufin` in DMs.
+you can send feedback about any issues through:
+- [GitHub issues](https://github.com/Hagb/giuroll-hagb/issues), and/or
+- `@hagb_` in DMs or in a [hisoutensoku server](https://hisouten.koumakan.jp/wiki/Discord_Servers_List) through [Discord](https://discord.com).
 
 ### Special thanks to:
+
+[Giufin](https://github.com/Giufinn) - for developing the oringinal [Giuroll](https://github.com/Giufinn/giuroll), and advice, support and other help in the development of this fork.
 
 [DPhoenix](https://github.com/enebe-nb) and [PinkySmile](https://github.com/Gegel85) - for advice and support with hisoutensoku modding  
 
