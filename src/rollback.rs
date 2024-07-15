@@ -752,8 +752,8 @@ pub unsafe fn dump_frame(
     let to_be_read = [
         (0x898600, 0x6c),
         (0x8985d8, 4),
-        (0x8985d4, 4),
         (0x8971b8, 0x20),
+        (0x8971d8, 0x1400), // 0x8971d8 ~ 0x8985d8
         (0x883cc8, 4),
         (0x89a88c, 4),
         (0x89a454, 4),
@@ -764,8 +764,6 @@ pub unsafe fn dump_frame(
         (0x89c01c, 4),
         (0x89aaf8, 4),
         (0x88526c, 4),
-        (0x8971c0, 0x14),
-        (0x8971c8, 0x4c),
     ];
 
     for (pos, size) in to_be_read {
