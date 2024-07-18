@@ -16,7 +16,8 @@ use windows::Win32::Foundation::HANDLE;
 use crate::println;
 use crate::{
     ptr_wrap, set_input_buffer, soku_heap_free, Callbacks, CALLBACK_ARRAY, ISDEBUG,
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
+    LAST_SHAKE_BEFORE_SMOOTH, MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT,
+    SOUND_MANAGER,
 };
 
 type RInput = [bool; 10];
@@ -816,6 +817,7 @@ pub unsafe fn dump_frame(
             & 0xFF) as u8,
         has_happened: false,
         has_called_never_happened: false,
+        last_shake_before_smooth: LAST_SHAKE_BEFORE_SMOOTH,
     };
     if let Some(time) = &mut DUMP_FRAME_TIME
         && let Some(now) = now
@@ -1140,6 +1142,7 @@ pub struct Frame {
     pub weather_sync_check: u8,
     pub has_called_never_happened: bool,
     pub has_happened: bool,
+    pub last_shake_before_smooth: f32,
 }
 
 impl Drop for Frame {
@@ -1312,6 +1315,7 @@ impl Frame {
                 (a.cb.load_state_post)(a.state);
             }
         }
+        unsafe { LAST_SHAKE_BEFORE_SMOOTH = self.last_shake_before_smooth };
     }
 }
 

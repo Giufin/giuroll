@@ -420,7 +420,7 @@ impl PartialEq for F32 {
 impl Eq for F32 {}
 
 #[derive(Debug, PartialEq, Eq)]
-struct CameraActualTransform {
+struct CameraTransform {
     affected_only_by_smooth1: [F32; 3], // scale and background transform
     affected_only_by_smooth2: [F32; 2], // shake degrees
     shake_affected_by_game_and_smooth: F32, // shake
@@ -428,7 +428,7 @@ struct CameraActualTransform {
     determined_by_smooth1: [F32; 2],    // final transform
     determined_by_smooth2: [F32; 4],    // unknown
 }
-impl CameraActualTransform {
+impl CameraTransform {
     unsafe fn dump() -> Self {
         let camera: usize = 0x00898600;
         Self {
@@ -472,10 +472,11 @@ impl CameraActualTransform {
         *((camera + 0x5c) as *mut [F32; 4]) = self.determined_by_smooth2;
     }
 }
-static mut LAST_CAMERA_IDEAL_TRANSFORM: Option<CameraActualTransform> = None;
-static mut CAMERA_ACTUAL_SMOOTH_TRANSFORM: Option<CameraActualTransform> = None;
-// static mut SMOOTH_COUNT: usize = 0;
+
+static mut CAMERA_ACTUAL_SMOOTH_TRANSFORM: Option<CameraTransform> = None;
+static mut LAST_SHAKE_BEFORE_SMOOTH: f32 = 0.0;
 static mut SMOOTH_BACKGROUND: bool = true;
+static mut CURRENTLY_PAUSED: bool = false;
 
 //returns None on .ini errors
 fn truer_exec(filename: PathBuf) -> Option<()> {
@@ -936,8 +937,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         println!("Memory leak: {} bytes", MEMORY_LEAK);
         MEMORY_LEAK = 0;
         LAST_M_LEN = 0;
-        LAST_CAMERA_IDEAL_TRANSFORM = None;
         CAMERA_ACTUAL_SMOOTH_TRANSFORM = None;
+        LAST_SHAKE_BEFORE_SMOOTH = 0.0;
     }
 
     //no_ko_sound
@@ -1030,57 +1031,47 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     unsafe extern "thiscall" fn save_last_transform(camera: usize) {
-        let gametype_main = *(0x898688 as *const usize);
-        let is_netplay = *(0x8986a0 as *const usize) != 0;
-        if SMOOTH_BACKGROUND && camera == 0x898600 && (gametype_main, is_netplay) == (1, true) {
-            LAST_CAMERA_IDEAL_TRANSFORM = Some(CameraActualTransform::dump());
-        }
+        LAST_SHAKE_BEFORE_SMOOTH = CameraTransform::dump().shake_affected_by_game_and_smooth.f;
         let transform_smoothly: unsafe extern "thiscall" fn(usize) = std::mem::transmute(0x429040);
         transform_smoothly(camera);
-        // SMOOTH_COUNT += 1;
     }
 
-    static mut ORI_RENDER_BATTLE: Option<unsafe extern "cdecl" fn()> = None;
-    unsafe extern "cdecl" fn render_battle() {
-        if !SMOOTH_BACKGROUND {
-            ORI_RENDER_BATTLE.unwrap()();
-            return;
-        }
-        if let Some(ideal_before_smoothed) =
-            LAST_CAMERA_IDEAL_TRANSFORM.replace(CameraActualTransform::dump())
-        {
-            // this whole block will not be run if the game is paused,
-            // because LAST_CAMERA_IDEAL_TRANSFORM is None in such a sitation.
-            let transform_smoothly: unsafe extern "thiscall" fn(u32) =
-                std::mem::transmute(0x429040);
-            ideal_before_smoothed.restore_all();
-            let camera: u32 = 0x00898600;
-            transform_smoothly(camera);
-            assert_eq!(
-                Some(CameraActualTransform::dump()),
-                LAST_CAMERA_IDEAL_TRANSFORM,
-                "unreproducible smooth!"
-            );
-            ideal_before_smoothed.restore_all();
+    static mut CAMERA_IDEAL_BACKUP: Option<CameraTransform> = None;
+    unsafe extern "cdecl" fn render_battle(_a: *mut ilhook::x86::Registers, _b: usize) {
+        let gametype_main = *(0x898688 as *const usize);
+        let is_netplay = *(0x8986a0 as *const usize) != 0;
+        assert!(
+            CAMERA_IDEAL_BACKUP.is_none(),
+            "The backup camera is not used, probably causing desync!"
+        );
+        if SMOOTH_BACKGROUND && !CURRENTLY_PAUSED && (gametype_main, is_netplay) == (1, true) {
+            let ideal = CameraTransform::dump();
             if let Some(mut last_smoothed) = CAMERA_ACTUAL_SMOOTH_TRANSFORM.take() {
                 // smooth camera
-                last_smoothed.shake_affected_by_game_and_smooth =
-                    ideal_before_smoothed.shake_affected_by_game_and_smooth;
+                // Without rollback, it is expected to provide the same graphics with the ideal one.
+                // So set the "shake" field.
+                last_smoothed.shake_affected_by_game_and_smooth = F32 {
+                    f: LAST_SHAKE_BEFORE_SMOOTH,
+                };
                 last_smoothed.validate_determined_by_shake();
-                last_smoothed.restore_determined_by_shake();
-                last_smoothed.restore_affected_only_by_smooth();
-                last_smoothed.restore_shake_affected_by_game_and_smooth();
-                // others are either affected only by game or determined by smooth.
+                last_smoothed.restore_all();
+                let transform_smoothly: unsafe extern "thiscall" fn(usize) =
+                    std::mem::transmute(0x429040);
+                let camera: usize = 0x00898600;
                 transform_smoothly(camera);
+                let smoothed = CameraTransform::dump();
+                assert_eq!(
+                    smoothed.shake_affected_by_game_and_smooth,
+                    ideal.shake_affected_by_game_and_smooth
+                );
+                assert_eq!(smoothed.determined_by_shake, ideal.determined_by_shake);
             }
+            CAMERA_IDEAL_BACKUP = Some(ideal);
         }
-        ORI_RENDER_BATTLE.unwrap()();
     }
     unsafe {
-        ORI_RENDER_BATTLE = Some(tamper_jmp_relative_opr(
-            0x47a9bf as *mut c_void,
-            render_battle as unsafe extern "cdecl" fn(),
-        ));
+        let new = ilhook::x86::Hooker::new(0x47a9b0, HookType::JmpBack(render_battle), 0).hook(8);
+        std::mem::forget(new);
         for i in [0x004295c1, 0x0047fda0, 0x0048075d, 0x004796fe] as [usize; 4] {
             tamper_jmp_relative_opr(
                 i as *mut c_void,
@@ -1091,9 +1082,9 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
     unsafe extern "cdecl" fn after_render_battle(_a: *mut ilhook::x86::Registers, _b: usize) {
-        if SMOOTH_BACKGROUND && let Some(ideal) = LAST_CAMERA_IDEAL_TRANSFORM.take() {
+        if SMOOTH_BACKGROUND && let Some(ideal) = CAMERA_IDEAL_BACKUP.take() {
             // dump smoothed camera
-            CAMERA_ACTUAL_SMOOTH_TRANSFORM = Some(CameraActualTransform::dump());
+            CAMERA_ACTUAL_SMOOTH_TRANSFORM = Some(CameraTransform::dump());
             ideal.restore_all();
         }
 
@@ -2612,7 +2603,6 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     let is_netplay = *(0x8986a0 as *const usize) != 0;
     IS_FIRST_READ_INPUTS = true;
     if framecount == 0 {
-        LAST_CAMERA_IDEAL_TRANSFORM = None;
         CAMERA_ACTUAL_SMOOTH_TRANSFORM = None;
     }
 
@@ -2680,4 +2670,5 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     }
     (*a).ebx = cur_speed;
     (*a).edi = cur_speed_iter;
+    CURRENTLY_PAUSED = *battle_state == 4;
 }
