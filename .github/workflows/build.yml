@@ -23,7 +23,7 @@ jobs:
           cargo build --profile ${{env.PROFILE}} -Z build-std
       - run: |
           cd injector
-          cargo build --profile ${{env.PROFILE}} -Z build-std
+          cargo build --profile ${{env.PROFILE}} -Z build-std=std,panic_abort
           cd ..
       - run: |
           cp giuroll.ini target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
