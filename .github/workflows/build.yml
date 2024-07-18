@@ -22,8 +22,13 @@ jobs:
       - run: |
           cargo build --profile ${{env.PROFILE}} -Z build-std
       - run: |
+          cd injector
+          cargo build --profile ${{env.PROFILE}} -Z build-std
+          cd ..
+      - run: |
           cp giuroll.ini target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
           cp LICENSE target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+          cp injector/target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/injector.exe target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/
           echo [InternetShortcut] > source-code-and-the-build.url
           # https://stackoverflow.com/a/70566764
           echo URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} >> source-code-and-the-build.url
@@ -38,6 +43,7 @@ jobs:
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.ini
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/injector.exe
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
       - uses: actions/upload-artifact@v4
         with:
@@ -55,5 +61,6 @@ jobs:
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.ini
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/LICENSE.txt
+            target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/injector.exe
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/source-code-and-the-build.url
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
