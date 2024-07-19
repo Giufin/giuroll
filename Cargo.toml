@@ -3,7 +3,7 @@ cargo-features = ["profile-rustflags"]
 name = "giuroll"
 authors = ["Giufin"]
 license = "MIT"
-version = "0.6.16-4-hagb-unofficial"
+version = "0.6.17-0-hagb-unofficial"
 edition = "2021"
 build = "build.rs"
 
