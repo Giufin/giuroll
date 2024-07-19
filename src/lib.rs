@@ -480,12 +480,20 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         warning_box(
             format!(
                 "{}\n{}\n{info:}",
-                "Giuroll was panicked, which may or may not be caused by Giuroll.",
-                concat!(
-                    "Your feedback is important! ",
-                    "Please take a screenshot and report the information to ",
-                    "@hagb_ in public hisoutensoku Discord groups."
-                )
+                if cfg!(feature = "cn") {
+                    "Giuroll 检测到异常！"
+                } else {
+                    "Giuroll was panicked, which may or may not be caused by Giuroll."
+                },
+                if cfg!(feature = "cn") {
+                    "你的反馈很重要！请截图并加入 QQ 群 200803640 反馈。"
+                } else {
+                    concat!(
+                        "Your feedback is important! ",
+                        "Please take a screenshot and report the information to ",
+                        "@hagb_ in public hisoutensoku Discord groups.",
+                    )
+                }
             )
             .as_str(),
             "Panic!",
@@ -672,15 +680,23 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     #[allow(unused_mut)]
-    let mut verstr: String = if f62_enabled {
-        format!("{}CN", VER)
-    } else {
-        format!("{}", VER)
-    };
+    let mut verstr: String = VER.to_string();
     #[cfg(feature = "lowframetest")]
     {
         verstr += "-low_frame_test"
     };
+    #[cfg(feature = "cn")]
+    {
+        match verstr.strip_suffix("-unofficial") {
+            Some(s) => {
+                verstr = s.to_string();
+            }
+            _ => {}
+        }
+    }
+    if f62_enabled {
+        verstr += " CN";
+    }
     let mut title = read_ini_string(
         &conf,
         "Misc",
