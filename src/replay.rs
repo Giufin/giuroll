@@ -1,12 +1,12 @@
 use crate::{
     change_delay_from_keys, draw_num, draw_num_x_center, get_num_length, pause, println, ptr_wrap,
     read_current_input, read_key_better, resume,
-    rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
+    rollback::{self, dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
     ENABLE_CHECK_MODE, F32, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH,
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
-    OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
-    TAKEOVER_COLOR,
+    OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SMOOTH,
+    SMOOTH_ENABLED_CONFIG, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -224,10 +224,11 @@ pub unsafe fn clean_replay_statics() {
     ALLOCS = None;
 
     DISABLE_PAUSE = false;
-    if RE_PLAY.take().is_some() || PERFORMANCE_TEST.take().is_some() {
+    if RE_PLAY.take().is_some() {
         set_keys_availability_in_takeover(true);
     }
     NEXT_DRAW_ROLLBACK = None;
+    PERFORMANCE_TEST = None
 }
 
 unsafe fn set_keys_availability_in_takeover(enable: bool) {
@@ -362,6 +363,7 @@ pub struct Check {
 pub struct PerformanceTest {
     base_framecount: usize,
     max_rollback: usize,
+    rollbacking: bool,
 }
 
 static mut ALLOCS: Option<HashSet<usize>> = None;
@@ -394,14 +396,18 @@ pub unsafe fn handle_replay(
                 is_failed: false,
             });
             PAUSESTATE.store(0, Relaxed);
-        } else if let Some(max_rb) = (1..=13).find_map(|x| read_key_better(x + 1).then_some(x)) {
+        } else if let Some(max_rb) = (2..=13).find_map(|x| read_key_better(x + 1).then_some(x)) {
             PAUSESTATE.store(0, Relaxed);
             NEXT_DRAW_ROLLBACK = Some(max_rb as i32);
             PERFORMANCE_TEST = Some(PerformanceTest {
                 base_framecount: 0,
                 max_rollback: max_rb as usize,
+                rollbacking: true,
             });
-            set_keys_availability_in_takeover(false);
+            if SMOOTH_ENABLED_CONFIG {
+                SMOOTH = true;
+            }
+            // set_keys_availability_in_takeover(false);
         } else {
             DISABLE_SOUND = false;
             CHECK = None
@@ -526,6 +532,26 @@ pub unsafe fn handle_replay(
 
     resume(battle_state);
 
+    unsafe fn get_input(is_p2: bool) -> [bool; 10] {
+        let p_battle_manager = *(0x008985E4 as *const *const u8);
+        let player_addr: *const u8 = match is_p2 {
+            true => *(p_battle_manager.offset(0x10) as *const _),
+            false => *(p_battle_manager.offset(0xc) as *const _),
+        };
+        let addr: *const i32 = player_addr.offset(0x754) as *const i32;
+        let mut ret = [false; 10];
+        (ret[0], ret[1]) = (*addr.offset(1) < 0, *addr.offset(1) > 0);
+        (ret[2], ret[3]) = (*addr.offset(0) < 0, *addr.offset(0) > 0);
+        for i in 2..8 {
+            ret[i - 2 + 4] = *addr.offset(i as isize) > 0;
+        }
+        ret
+    }
+    unsafe fn apply_old_input() {
+        REAL_INPUT = Some(get_input(false));
+        REAL_INPUT2 = Some(get_input(true));
+        // println!("{:?} {:?}", REAL_INPUT, REAL_INPUT2);
+    }
     if let Some(check) = CHECK.as_mut() {
         unsafe fn check_failed() {
             println!(
@@ -569,26 +595,6 @@ pub unsafe fn handle_replay(
         let ori_is_replay_over: unsafe extern "fastcall" fn(u32) -> bool =
             unsafe { std::mem::transmute(0x00480860) };
         let is_over = ori_is_replay_over(0x898718) || *battle_state == 5;
-        unsafe fn get_input(is_p2: bool) -> [bool; 10] {
-            let p_battle_manager = *(0x008985E4 as *const *const u8);
-            let player_addr: *const u8 = match is_p2 {
-                true => *(p_battle_manager.offset(0x10) as *const _),
-                false => *(p_battle_manager.offset(0xc) as *const _),
-            };
-            let addr: *const i32 = player_addr.offset(0x754) as *const i32;
-            let mut ret = [false; 10];
-            (ret[0], ret[1]) = (*addr.offset(1) < 0, *addr.offset(1) > 0);
-            (ret[2], ret[3]) = (*addr.offset(0) < 0, *addr.offset(0) > 0);
-            for i in 2..8 {
-                ret[i - 2 + 4] = *addr.offset(i as isize) > 0;
-            }
-            ret
-        }
-        unsafe fn apply_old_input() {
-            REAL_INPUT = Some(get_input(false));
-            REAL_INPUT2 = Some(get_input(true));
-            // println!("{:?} {:?}", REAL_INPUT, REAL_INPUT2);
-        }
         match check.check_step {
             CheckStep::TestPlay1 => {
                 check.check_data.push(CheckData::from_battle());
@@ -715,22 +721,34 @@ pub unsafe fn handle_replay(
     }
 
     if let Some(test) = PERFORMANCE_TEST.as_mut() {
-        if framecount == test.base_framecount {
-            override_target_frame = Some(
-                (test.base_framecount + test.max_rollback)
-                    .try_into()
-                    .unwrap(),
-            );
-            // println!("to {} + 1", override_target_frame.unwrap());
-        } else if framecount >= test.base_framecount + test.max_rollback + 1 {
-            // println!("now {}", framecount);
-            test.base_framecount += 1;
-            override_target_frame = Some(test.base_framecount.try_into().unwrap());
+        if framecount < test.base_framecount {
+            if *cur_speed_iter + 1 >= *cur_speed {
+                override_target_frame = Some(test.base_framecount as u32);
+            }
+        } else if framecount == test.base_framecount {
             while let Some(frame) = FRAMES.front_mut()
                 && frame.number < test.base_framecount
             {
                 frame.did_happen();
                 FRAMES.pop_front();
+            }
+            override_target_frame = Some(
+                (test.base_framecount + test.max_rollback - 1)
+                    .try_into()
+                    .unwrap(),
+            );
+            test.rollbacking = false;
+            // println!("to {} + 1", override_target_frame.unwrap());
+        } else if test.base_framecount < framecount {
+            if framecount < test.base_framecount + test.max_rollback {
+                if !test.rollbacking {
+                    apply_old_input();
+                }
+            } else {
+                // println!("now {}", framecount);
+                override_target_frame = Some(test.base_framecount.try_into().unwrap());
+                test.base_framecount += *cur_speed as usize;
+                test.rollbacking = true;
             }
         }
     }

@@ -419,21 +419,92 @@ impl PartialEq for F32 {
 }
 impl Eq for F32 {}
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct XY {
+    x: f32,
+    y: f32,
+}
+
+impl PartialEq for XY {
+    fn eq(&self, other: &Self) -> bool {
+        return self.x.to_ne_bytes() == other.x.to_ne_bytes()
+            && self.y.to_ne_bytes() == other.y.to_ne_bytes();
+    }
+}
+impl Eq for XY {}
+impl std::ops::Add<XY> for XY {
+    type Output = XY;
+
+    fn add(self, rhs: XY) -> Self::Output {
+        Self {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
+impl std::ops::Sub<XY> for XY {
+    type Output = XY;
+
+    fn sub(self, rhs: XY) -> Self::Output {
+        Self {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
+}
+
+impl std::ops::Mul<f32> for XY {
+    type Output = XY;
+
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self {
+            x: self.x * rhs,
+            y: self.y * rhs,
+        }
+    }
+}
+
+impl std::ops::Div<f32> for XY {
+    type Output = XY;
+
+    fn div(self, rhs: f32) -> Self::Output {
+        Self {
+            x: self.x / rhs,
+            y: self.y / rhs,
+        }
+    }
+}
+
+impl XY {
+    fn dot_prod(self, rhs: XY) -> f32 {
+        self.x * rhs.x + self.y * rhs.y
+    }
+
+    fn projection_of(self, rhs: XY) -> XY {
+        // f = self / self.length() * self.dot_prod(rhs) / self.length();
+        self * (self.dot_prod(rhs) / self.dot_prod(self))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct CameraTransform {
-    affected_only_by_smooth1: [F32; 3], // scale and background transform
-    affected_only_by_smooth2: [F32; 2], // shake degrees
-    shake_affected_by_game_and_smooth: F32, // shake
-    determined_by_smooth1: [F32; 2],    // final transform
-    determined_by_smooth2: [F32; 4],    // unknown
-    determined_by_smooth3: [F32; 2],    // shake x y
+    scale_affected_only_by_smooth: F32,              // scale
+    xy_affected_only_by_smooth: XY,                  // and background transform
+    shake_degress_affected_only_by_smooth: [F32; 2], // shake degrees
+    shake_affected_by_game_and_smooth: F32,          // shake
+    determined_by_smooth1: [F32; 2],                 // final transform
+    determined_by_smooth2: [F32; 4],                 // unknown
+    determined_by_smooth3: [F32; 2],                 // shake x y
 }
 impl CameraTransform {
     unsafe fn dump() -> Self {
         let camera: usize = 0x00898600;
         Self {
-            affected_only_by_smooth1: *((camera + 0x14) as *const [F32; 3]),
-            affected_only_by_smooth2: *((camera + 0x38) as *const [F32; 2]),
+            scale_affected_only_by_smooth: *((camera + 0x14) as *const F32),
+            xy_affected_only_by_smooth: *((camera + 0x18) as *const XY),
+            shake_degress_affected_only_by_smooth: *((camera + 0x38) as *const [F32; 2]),
             shake_affected_by_game_and_smooth: *((camera + 0x40) as *const F32),
             determined_by_smooth3: *((camera + 0x30) as *const [F32; 2]),
             determined_by_smooth1: *((camera + 0x0c) as *const [F32; 2]),
@@ -449,8 +520,9 @@ impl CameraTransform {
     }
     unsafe fn restore_affected_only_by_smooth(&self) {
         let camera: usize = 0x00898600;
-        *((camera + 0x14) as *mut [F32; 3]) = self.affected_only_by_smooth1;
-        *((camera + 0x38) as *mut [F32; 2]) = self.affected_only_by_smooth2;
+        *((camera + 0x14) as *mut F32) = self.scale_affected_only_by_smooth;
+        *((camera + 0x18) as *mut XY) = self.xy_affected_only_by_smooth;
+        *((camera + 0x38) as *mut [F32; 2]) = self.shake_degress_affected_only_by_smooth;
     }
     unsafe fn restore_shake_affected_by_game_and_smooth(&self) {
         let camera: usize = 0x00898600;
@@ -467,11 +539,25 @@ impl CameraTransform {
             self.determined_by_smooth3 = [F32 { f: 0.0 }, F32 { f: 0.0 }];
         }
     }
+    unsafe fn get_target_xy() -> XY {
+        let camera: usize = 0x00898600;
+        *((camera + 0) as *const XY)
+    }
+    unsafe fn get_target_scale() -> f32 {
+        let camera: usize = 0x00898600;
+        *((camera + 0x8) as *const f32)
+    }
 }
 
 static mut CAMERA_ACTUAL_SMOOTH_TRANSFORM: Option<CameraTransform> = None;
-static mut LAST_SHAKE_BEFORE_SMOOTH: f32 = 0.0;
-static mut SMOOTH_BACKGROUND: bool = true;
+static mut LAST_CAMERA_BEFORE_SMOOTH: Option<CameraTransform> = None;
+static mut SMOOTH_ENABLED_CONFIG: bool = true;
+static mut SMOOTH_INCREASING_SCALE_CORRECTION: Option<f32> = None;
+static mut SMOOTH_DECREASING_SCALE_CORRECTION: Option<f32> = None;
+static mut SMOOTH_X_CORRECTION: Option<f32> = None;
+static mut SMOOTH_Y_CORRECTION: Option<f32> = None;
+static mut SMOOTH: bool = false;
+
 static mut CURRENTLY_PAUSED: bool = false;
 
 //returns None on .ini errors
@@ -597,6 +683,22 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     let freeze_mitigation = read_ini_bool(&conf, "Netplay", "freeze_mitigation__", false);
     let autodelay_rollback = read_ini_int_hex(&conf, "Netplay", "auto_delay_rollback", 0);
     let smooth_camera = read_ini_bool(&conf, "Netplay", "smooth_camera", true);
+    let smooth_decreasing_scale_correction = read_ini_int_hex(
+        &conf,
+        "SmoothCamera",
+        "decreasing_scale_correction_half_life__",
+        15,
+    );
+    let smooth_increasing_scale_correction = read_ini_int_hex(
+        &conf,
+        "SmoothCamera",
+        "increasing_scale_correction_half_life__",
+        60,
+    );
+    let smooth_x_correction =
+        read_ini_int_hex(&conf, "SmoothCamera", "x_correction_half_life__", 21);
+    let smooth_y_correction =
+        read_ini_int_hex(&conf, "SmoothCamera", "y_correction_half_life__", 21);
     let max_rollback_preference =
         read_ini_int_hex(&conf, "Netplay", "max_rollback_preference", 6).clamp(0, 15) as u8;
     let warning_when_lagging = read_ini_bool(&conf, "Misc", "warning_when_lagging", true);
@@ -746,7 +848,17 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         ENABLE_CHECK_MODE = enable_check_mode;
         WARNING_WHEN_LAGGING = warning_when_lagging;
         MAX_ROLLBACK_PREFERENCE = max_rollback_preference;
-        SMOOTH_BACKGROUND = smooth_camera;
+        SMOOTH_ENABLED_CONFIG = smooth_camera;
+        let half_life_to_correction = |half_life: i64| match half_life {
+            0 => 1.0,
+            x => 1.0 - 0.5_f32.powf(1.0 / x.max(1) as f32),
+        };
+        SMOOTH_INCREASING_SCALE_CORRECTION =
+            Some(half_life_to_correction(smooth_decreasing_scale_correction));
+        SMOOTH_DECREASING_SCALE_CORRECTION =
+            Some(half_life_to_correction(smooth_increasing_scale_correction));
+        SMOOTH_X_CORRECTION = Some(half_life_to_correction(smooth_x_correction));
+        SMOOTH_Y_CORRECTION = Some(half_life_to_correction(smooth_y_correction));
     }
 
     unsafe {
@@ -950,7 +1062,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         MEMORY_LEAK = 0;
         LAST_M_LEN = 0;
         CAMERA_ACTUAL_SMOOTH_TRANSFORM = None;
-        LAST_SHAKE_BEFORE_SMOOTH = 0.0;
+        LAST_CAMERA_BEFORE_SMOOTH = None;
+        SMOOTH = false;
     }
 
     //no_ko_sound
@@ -1043,7 +1156,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     unsafe extern "thiscall" fn save_last_transform(camera: usize) {
-        LAST_SHAKE_BEFORE_SMOOTH = CameraTransform::dump().shake_affected_by_game_and_smooth.f;
+        LAST_CAMERA_BEFORE_SMOOTH = Some(CameraTransform::dump());
         let transform_smoothly: unsafe extern "thiscall" fn(usize) = std::mem::transmute(0x429040);
         transform_smoothly(camera);
     }
@@ -1056,7 +1169,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             CAMERA_IDEAL_BACKUP.is_none(),
             "The backup camera is not used, probably causing desync!"
         );
-        if SMOOTH_BACKGROUND && (gametype_main, is_netplay) == (1, true) {
+        if SMOOTH {
             let ideal = CameraTransform::dump();
             if let Some(mut last_smoothed) = CAMERA_ACTUAL_SMOOTH_TRANSFORM.take() {
                 // smooth camera:
@@ -1069,10 +1182,52 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                     // However it is still necessary to restore, since the camera was also covered.
                     last_smoothed.restore_all();
                 } else {
-                    last_smoothed.shake_affected_by_game_and_smooth = F32 {
-                        f: LAST_SHAKE_BEFORE_SMOOTH,
-                    };
-                    last_smoothed.validate_after_partially_modified();
+                    if let Some(before) = LAST_CAMERA_BEFORE_SMOOTH.as_ref() {
+                        last_smoothed.shake_affected_by_game_and_smooth = F32 {
+                            f: before.shake_affected_by_game_and_smooth.f,
+                        };
+
+                        let clamp_unordered =
+                            |a: f32, o1: f32, o2: f32| a.clamp(o1.min(o2), o1.max(o2));
+                        let target_scale = CameraTransform::get_target_scale();
+                        let scale = last_smoothed.scale_affected_only_by_smooth.f;
+                        let actual_scale = before.scale_affected_only_by_smooth.f;
+                        let diff_to_target = target_scale - scale;
+                        let diff_to_actual = actual_scale - scale;
+                        let diff = clamp_unordered(diff_to_actual, 0.0, diff_to_target);
+                        if diff.abs() >= 0.01 {
+                            if target_scale > scale {
+                                if let Some(c) = SMOOTH_INCREASING_SCALE_CORRECTION {
+                                    last_smoothed.scale_affected_only_by_smooth.f += diff * c;
+                                }
+                            } else {
+                                if let Some(c) = SMOOTH_DECREASING_SCALE_CORRECTION {
+                                    last_smoothed.scale_affected_only_by_smooth.f += diff * c;
+                                }
+                            }
+                        }
+
+                        let target_xy = CameraTransform::get_target_xy();
+                        let xy = last_smoothed.xy_affected_only_by_smooth;
+                        let actual_xy = before.xy_affected_only_by_smooth;
+                        let diff_to_target = target_xy - xy;
+                        let diff_to_actual = actual_xy - xy;
+                        if diff_to_target.x.abs() > 1.0 || diff_to_actual.y.abs() > 1.0 {
+                            let mut diff = diff_to_target.projection_of(diff_to_actual);
+                            diff.x = clamp_unordered(diff.x, 0.0, diff_to_target.x);
+                            diff.y = clamp_unordered(diff.y, 0.0, diff_to_target.y);
+                            if diff.x > 1.0 || diff.y > 1.0 {
+                                if let Some(c) = SMOOTH_X_CORRECTION {
+                                    last_smoothed.xy_affected_only_by_smooth.x = xy.x + diff.x * c;
+                                }
+                                if let Some(c) = SMOOTH_Y_CORRECTION {
+                                    last_smoothed.xy_affected_only_by_smooth.y = xy.y + diff.y * c;
+                                }
+                            }
+                        }
+
+                        last_smoothed.validate_after_partially_modified();
+                    }
                     last_smoothed.restore_all();
                     let transform_smoothly: unsafe extern "thiscall" fn(usize) =
                         std::mem::transmute(0x429040);
@@ -2538,6 +2693,9 @@ unsafe fn handle_online(
         netcoder.display_stats = TOGGLE_STAT;
         NETCODER = Some(netcoder);
 
+        if SMOOTH_ENABLED_CONFIG {
+            SMOOTH = true;
+        }
         //return;
     }
 
