@@ -558,7 +558,7 @@ static mut SMOOTH_X_CORRECTION: Option<f32> = None;
 static mut SMOOTH_Y_CORRECTION: Option<f32> = None;
 static mut SMOOTH: bool = false;
 
-static mut CURRENTLY_PAUSED: bool = false;
+static mut LAST_SMOOTHED_FRAMECOUNT: usize = 0;
 
 //returns None on .ini errors
 fn truer_exec(filename: PathBuf) -> Option<()> {
@@ -1161,27 +1161,34 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         transform_smoothly(camera);
     }
 
-    static mut CAMERA_IDEAL_BACKUP: Option<CameraTransform> = None;
-    unsafe extern "cdecl" fn render_battle(_a: *mut ilhook::x86::Registers, _b: usize) {
-        let gametype_main = *(0x898688 as *const usize);
-        let is_netplay = *(0x8986a0 as *const usize) != 0;
-        assert!(
-            CAMERA_IDEAL_BACKUP.is_none(),
-            "The backup camera is not used, probably causing desync!"
-        );
+    unsafe fn render_battle(
+        cbattle_render: unsafe extern "thiscall" fn(usize) -> usize,
+        cbattle: usize,
+    ) -> usize {
         if SMOOTH {
             let ideal = CameraTransform::dump();
             if let Some(mut last_smoothed) = CAMERA_ACTUAL_SMOOTH_TRANSFORM.take() {
                 // smooth camera:
                 // If there isn't rollback, it is expected to provide the graphics same with the ideal one.
                 // So set the "shake" field.
-                if CURRENTLY_PAUSED {
+                if LAST_SMOOTHED_FRAMECOUNT > *SOKU_FRAMECOUNT {
+                    println!(
+                        "Smooth when rewinding? last: {}, current: {}",
+                        LAST_SMOOTHED_FRAMECOUNT, *SOKU_FRAMECOUNT
+                    );
+                } else if LAST_SMOOTHED_FRAMECOUNT == *SOKU_FRAMECOUNT {
                     // If this frame is paused, don't set shake or smooth again, because it has been
                     // smoothed and the graphic is expected to be frozen when the frame is paused.
                     // It has been smoothed because the current netcode will not pause after stepping.
                     // However it is still necessary to restore, since the camera was also covered.
                     last_smoothed.restore_all();
                 } else {
+                    if LAST_SMOOTHED_FRAMECOUNT + 1 < *SOKU_FRAMECOUNT {
+                        println!(
+                            "Smooth when fast forwarding? last: {}, current: {}",
+                            LAST_SMOOTHED_FRAMECOUNT, *SOKU_FRAMECOUNT
+                        );
+                    }
                     if let Some(before) = LAST_CAMERA_BEFORE_SMOOTH.as_ref() {
                         last_smoothed.shake_affected_by_game_and_smooth = F32 {
                             f: before.shake_affected_by_game_and_smooth.f,
@@ -1240,12 +1247,53 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                     ideal.shake_affected_by_game_and_smooth
                 );
             }
-            CAMERA_IDEAL_BACKUP = Some(ideal);
+            // dump smoothed camera
+            CAMERA_ACTUAL_SMOOTH_TRANSFORM = Some(CameraTransform::dump());
+            LAST_SMOOTHED_FRAMECOUNT = *SOKU_FRAMECOUNT;
+            let ret = cbattle_render(cbattle);
+            ideal.restore_all();
+            return ret;
+        } else {
+            return cbattle_render(cbattle);
         }
     }
     unsafe {
-        let new = ilhook::x86::Hooker::new(0x47a9b0, HookType::JmpBack(render_battle), 0).hook(8);
-        std::mem::forget(new);
+        static mut CBATTLE_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        unsafe extern "thiscall" fn cbattle_render(cbattle: usize) -> usize {
+            render_battle(CBATTLE_RENDER.unwrap(), cbattle)
+        }
+        CBATTLE_RENDER = Some(tamper_memory(
+            0x008574a8 as _,
+            cbattle_render as unsafe extern "thiscall" fn(usize) -> usize,
+        ));
+
+        static mut CBATTLECL_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        unsafe extern "thiscall" fn cbattlecl_render(cbattle: usize) -> usize {
+            render_battle(CBATTLECL_RENDER.unwrap(), cbattle)
+        }
+        CBATTLECL_RENDER = Some(tamper_memory(
+            0x00857578 as _,
+            cbattlecl_render as unsafe extern "thiscall" fn(usize) -> usize,
+        ));
+
+        static mut CBATTLESV_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        unsafe extern "thiscall" fn cbattlesv_render(cbattle: usize) -> usize {
+            render_battle(CBATTLESV_RENDER.unwrap(), cbattle)
+        }
+        CBATTLESV_RENDER = Some(tamper_memory(
+            0x00857520 as _,
+            cbattlesv_render as unsafe extern "thiscall" fn(usize) -> usize,
+        ));
+
+        static mut CBATTLE_WATCH_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        unsafe extern "thiscall" fn cbattle_watch_render(cbattle: usize) -> usize {
+            render_battle(CBATTLE_WATCH_RENDER.unwrap(), cbattle)
+        }
+        CBATTLE_WATCH_RENDER = Some(tamper_memory(
+            0x00857594 as _,
+            cbattle_watch_render as unsafe extern "thiscall" fn(usize) -> usize,
+        ));
+
         for i in [0x004295c1, 0x0047fda0, 0x0048075d, 0x004796fe] as [usize; 4] {
             tamper_jmp_relative_opr(
                 i as *mut c_void,
@@ -1255,13 +1303,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     }
 
     static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
-    unsafe extern "cdecl" fn after_render_battle(_a: *mut ilhook::x86::Registers, _b: usize) {
-        if let Some(ideal) = CAMERA_IDEAL_BACKUP.take() {
-            // dump smoothed camera
-            CAMERA_ACTUAL_SMOOTH_TRANSFORM = Some(CameraTransform::dump());
-            ideal.restore_all();
-        }
-
+    unsafe extern "cdecl" fn drawnumbers(_a: *mut ilhook::x86::Registers, _b: usize) {
         let d3d9_devic3 = 0x008A0E30 as *const *const IDirect3DDevice9;
         let yellow = D3DCOLOR_ARGB(0xff, 0xff, 0xff, 0);
         let red = D3DCOLOR_ARGB(0xff, 0xff, 0, 0);
@@ -1325,9 +1367,8 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(after_render_battle), 0).hook(7)
-    };
+    let new =
+        unsafe { ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(drawnumbers), 0).hook(7) };
     std::mem::forget(new);
 
     unsafe fn my_cselect_on_process(
@@ -2847,5 +2888,4 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
     }
     (*a).ebx = cur_speed;
     (*a).edi = cur_speed_iter;
-    CURRENTLY_PAUSED = *battle_state == 4;
 }
