@@ -1,11 +1,14 @@
 cargo-features = ["profile-rustflags"]
 [package]
 name = "giuroll"
-authors = ["Giufin"]
+authors = ["Giufin (2023~2024)", "Hagb (2024)"]
 license = "MIT"
 version = "0.6.17-1-hagb-unofficial"
 edition = "2021"
 build = "build.rs"
+description = "A network rollback mod for 東方非想天則 / Touhou 12.3 Hisoutensoku, with also support for replay rewind and takeover"
+homepage = "https://github.com/Hagb/giuroll-hagb"
+repository = "https://github.com/Hagb/giuroll-hagb"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
