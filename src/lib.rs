@@ -1219,11 +1219,11 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
                         let actual_xy = before.xy_affected_only_by_smooth;
                         let diff_to_target = target_xy - xy;
                         let diff_to_actual = actual_xy - xy;
-                        if diff_to_target.x.abs() > 1.0 || diff_to_actual.y.abs() > 1.0 {
+                        if diff_to_target.x.abs() > 1.0 || diff_to_target.y.abs() > 1.0 {
                             let mut diff = diff_to_target.projection_of(diff_to_actual);
                             diff.x = clamp_unordered(diff.x, 0.0, diff_to_target.x);
                             diff.y = clamp_unordered(diff.y, 0.0, diff_to_target.y);
-                            if diff.x > 1.0 || diff.y > 1.0 {
+                            if diff.x.abs() > 1.0 || diff.y.abs() > 1.0 {
                                 if let Some(c) = SMOOTH_X_CORRECTION {
                                     last_smoothed.xy_affected_only_by_smooth.x = xy.x + diff.x * c;
                                 }
