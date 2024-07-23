@@ -8,6 +8,7 @@ env:
   CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
   CARGO_PROFILE_RELEASE_DEBUG: true
   CARGO_PROFILE_RELEASE_STRIP: none
+  SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
   build:

@@ -15,7 +15,11 @@ fn main() {
         res.set_windres_path("/usr/bin/i686-w64-mingw32-windres");
     }
 
-    if let Some(version_pre) = env::var("CARGO_PKG_VERSION_PRE").unwrap().splitn(2, "-").next() {
+    if let Some(version_pre) = env::var("CARGO_PKG_VERSION_PRE")
+        .unwrap()
+        .splitn(2, "-")
+        .next()
+    {
         let mut version = 0_u64;
         version |= env::var("CARGO_PKG_VERSION_MAJOR")
             .unwrap()
@@ -37,6 +41,30 @@ fn main() {
         res.set_version_info(VersionInfo::PRODUCTVERSION, version);
     } else {
         panic!();
+    }
+
+    res.set(
+        "LegalCopyright",
+        format!(
+            "Copyright (c) {}",
+            env::var("CARGO_PKG_AUTHORS")
+                .unwrap()
+                .split(":")
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .as_str(),
+    );
+    res.set("ProductName", env::var("CARGO_PKG_NAME").unwrap().as_str());
+    res.set(
+        "FileDescription",
+        env::var("CARGO_PKG_DESCRIPTION").unwrap().as_str(),
+    );
+    if let Ok(repo) = env::var("SOURCE_URL") {
+        res.set(
+            "ProductVersion",
+            format!("{} ({})", env::var("CARGO_PKG_VERSION").unwrap(), repo).as_str(),
+        );
     }
 
     if let Err(e) = res.compile() {
