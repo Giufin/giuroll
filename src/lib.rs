@@ -11,6 +11,7 @@
 // shuold be solved before updating to 2024 edition?
 #![allow(static_mut_refs)]
 
+use core::slice;
 use std::fmt::Debug;
 use std::panic;
 use std::{
@@ -38,6 +39,7 @@ use ilhook::x86::{HookPoint, HookType};
 #[cfg(feature = "logtofile")]
 use log::info;
 use mininip::datas::{Identifier, Value};
+use mininip::errors::ParseFileError;
 use netcode::{Netcoder, NetworkPacket};
 
 //use notify::{RecursiveMode, Watcher};
@@ -219,28 +221,6 @@ unsafe fn tamper_jmp_relative_opr<T: Sized>(dst: *mut c_void, src: T) -> T {
     return ret;
 }
 
-// calling convention here was changed from cdecl to C because of the requirements of the new library. Thankfully they appear to be aliases in the current ABI
-#[no_mangle]
-pub unsafe extern "C" fn exeinit() {
-    truer_exec(std::env::current_dir().unwrap());
-}
-
-//if I don't pass the path like this I get an "access violation". The library I'm using for the injection does mention that arguments must be Copy
-static mut EXE_INIT_PATH: Vec<u8> = Vec::new();
-#[no_mangle]
-pub unsafe extern "C" fn better_exe_init_push_path(s: u8) {
-    EXE_INIT_PATH.push(s);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn better_exe_init() -> bool {
-    let os = OsStr::from_encoded_bytes_unchecked(EXE_INIT_PATH.as_ref());
-
-    truer_exec(PathBuf::from(os))
-        .or_else(|| truer_exec(std::env::current_dir().unwrap()))
-        .is_some()
-}
-
 #[no_mangle]
 pub extern "C" fn getPriority() -> i32 {
     1000
@@ -252,7 +232,17 @@ pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
 }
 
 #[no_mangle]
+pub extern "C" fn InitializeByLoader(dllmodule: HMODULE) -> bool {
+    Initialize_(dllmodule, true)
+}
+
+#[no_mangle]
 pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
+    Initialize_(dllmodule, false)
+}
+
+#[no_mangle]
+fn Initialize_(dllmodule: HMODULE, pretend_to_be_vanilla: bool) -> bool {
     let mut dat = [0u16; 1025];
     unsafe { GetModuleFileNameW(dllmodule, &mut dat) };
 
@@ -262,8 +252,17 @@ pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
     //let m = init(0);
     let mut filepath = Path::new(&s).to_owned();
     filepath.pop();
-    truer_exec(filepath);
-    true
+    match truer_exec(filepath, pretend_to_be_vanilla) {
+        Ok(_) => true,
+        Err(e) => {
+            warning_box(
+                "Failed to load Giuroll",
+                format!("Failed to parse ini: {}", e).as_str(),
+            );
+            false
+        }
+    }
+    // true
 }
 //687040 true real input buffer manipulation
 // 85b8ec some related varible, 487040
@@ -288,7 +287,6 @@ static SOKU_LOOP_EVENT: Mutex<Option<isize>> = Mutex::new(None);
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
 
-static mut TITLE: &'static [u16] = &[];
 const VER: &str = env!("CARGO_PKG_VERSION");
 
 unsafe extern "cdecl" fn skip(_a: *mut ilhook::x86::Registers, _b: usize, _c: usize) {}
@@ -561,7 +559,7 @@ static mut SMOOTH: bool = false;
 static mut LAST_SMOOTHED_FRAMECOUNT: usize = 0;
 
 //returns None on .ini errors
-fn truer_exec(filename: PathBuf) -> Option<()> {
+fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), ParseFileError> {
     panic::update_hook(|prev, info| {
         warning_box(
             format!(
@@ -597,7 +595,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     filepath.push("giuroll.ini");
     //println!("{:?}", filepath);
 
-    let conf = mininip::parse::parse_file(filepath).ok()?;
+    let conf = mininip::parse::parse_file(filepath)?;
 
     #[cfg(feature = "logtofile")]
     {
@@ -710,6 +708,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         cfg!(feature = "allocconsole") || ISDEBUG,
     );
     let enable_check_mode = read_ini_bool(&conf, "Misc", "enable_check_mode", false);
+    let turning_off_all_extra_ui = read_ini_bool(
+        &conf,
+        "Misc",
+        "turning_off_all_extra_ui",
+        pretend_to_be_vanilla,
+    );
     let outer_color: D3DCOLOR = read_ini_int_hex(
         &conf,
         "Takeover",
@@ -803,18 +807,18 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         &conf,
         "Misc",
         "game_title",
-        format!("Soku with giuroll {} :YoumuSleep:", verstr),
+        match pretend_to_be_vanilla {
+            true => "% + $",
+            false => "Touhou Hisoutensoku + $",
+        }
+        .to_string(),
     );
-    title.push('\0');
 
     let verstr = format!("Giuroll {}", verstr);
 
     let title = title.replace('$', &verstr);
 
-    let tleak = Box::leak(Box::new(title));
-
     unsafe {
-        TITLE = Box::leak(tleak.encode_utf16().collect::<Box<_>>());
         F62_ENABLED = f62_enabled;
         SPIN_TIME_MICROSECOND = spin as i128;
         INCREASE_DELAY_KEY = inc as u8;
@@ -1367,9 +1371,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let new =
-        unsafe { ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(drawnumbers), 0).hook(7) };
-    std::mem::forget(new);
+    if !turning_off_all_extra_ui {
+        let new = unsafe {
+            ilhook::x86::Hooker::new(0x43e320, HookType::JmpBack(drawnumbers), 0).hook(7)
+        };
+        std::mem::forget(new);
+    }
 
     unsafe fn my_cselect_on_process(
         origin: unsafe extern "thiscall" fn(*mut c_void) -> usize,
@@ -1451,10 +1458,13 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    let new = unsafe {
-        ilhook::x86::Hooker::new(0x42158f, HookType::JmpBack(render_number_on_select), 0).hook(5)
-    };
-    std::mem::forget(new);
+    if !turning_off_all_extra_ui {
+        let new = unsafe {
+            ilhook::x86::Hooker::new(0x42158f, HookType::JmpBack(render_number_on_select), 0)
+                .hook(5)
+        };
+        std::mem::forget(new);
+    }
 
     unsafe extern "cdecl" fn ongirlstalk(_a: *mut ilhook::x86::Registers, _b: usize) {
         GIRLSTALKED = true;
@@ -1910,14 +1920,37 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     //*HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
 
     unsafe {
-        std::thread::spawn(|| {
+        std::thread::spawn(move || {
             //wait to avoid being overwritten by th123e
-            std::thread::sleep(Duration::from_millis(3000));
-
-            windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
-                *(0x89ff90 as *const HWND),
-                windows::core::PCWSTR::from_raw(ptr_wrap!(TITLE.as_ptr())),
-            )
+            loop {
+                std::thread::sleep(Duration::from_millis(3000));
+                let hwnd = *(0x89ff90 as *const HWND);
+                if hwnd == windows::Win32::Foundation::HWND(0) {
+                    continue;
+                }
+                let mut origin_title = [0u16; 1024];
+                windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut origin_title);
+                let origin_title_length = origin_title.iter().position(|x| *x == 0).unwrap_or(0);
+                let title = title
+                    .encode_utf16()
+                    .collect::<Vec<u16>>()
+                    .iter()
+                    .flat_map(|x| {
+                        if *x == b'%' as u16 {
+                            origin_title[..origin_title_length].into_iter()
+                        } else {
+                            slice::from_ref(x).into_iter()
+                        }
+                    })
+                    .map(|x| *x)
+                    .chain([0])
+                    .collect::<Vec<u16>>();
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
+                    *(0x89ff90 as *const HWND),
+                    windows::core::PCWSTR::from_raw(title.as_ptr()),
+                );
+                break;
+            }
         })
     };
 
@@ -1926,7 +1959,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
     };
     std::mem::forget(new);
 
-    Some(())
+    Ok(())
 }
 
 #[no_mangle]

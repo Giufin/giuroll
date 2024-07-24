@@ -18,6 +18,8 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: nightly-2024-04-15
@@ -26,13 +28,18 @@ jobs:
           cargo build --profile ${{env.PROFILE}} -Z build-std
       - run: |
           cd injector
-          cargo build --profile ${{env.PROFILE}} -Z build-std=std,panic_abort
+          # Workaround for the FUCKING anti-virus software, many of which even detect an exe which does nothing
+          # but is just written in rust and compiled by nightly toolchain with `-Ctarget-feature=+crt-static`!
+          # Even compiled with stable toolchain, such an exe is detected as virus by some anti-virus software.
+          rustup +nightly-2022-04-22 target add i686-pc-windows-msvc
+          cargo +nightly-2022-04-22 build --profile ${{env.PROFILE}} --target i686-pc-windows-msvc
           cd ..
       - run: |
           mkdir ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp LICENSE ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE.txt
-          cp injector/target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/injector.exe ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
+          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader.exe ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
+          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader_dll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           echo [InternetShortcut] > source-code-and-the-build.url
           # https://stackoverflow.com/a/70566764
