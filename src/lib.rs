@@ -256,8 +256,8 @@ fn Initialize_(dllmodule: HMODULE, pretend_to_be_vanilla: bool) -> bool {
         Ok(_) => true,
         Err(e) => {
             warning_box(
-                "Failed to load Giuroll",
                 format!("Failed to parse ini: {}", e).as_str(),
+                "Failed to load Giuroll",
             );
             false
         }
