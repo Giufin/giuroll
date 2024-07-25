@@ -252,13 +252,24 @@ fn Initialize_(dllmodule: HMODULE, pretend_to_be_vanilla: bool) -> bool {
     //let m = init(0);
     let mut filepath = Path::new(&s).to_owned();
     filepath.pop();
+
+    static GR_LOADED: Mutex<bool> = Mutex::new(false);
+    let mut lock = GR_LOADED.lock().unwrap();
+
+    if *lock {
+        warning_box(
+            "This giuroll had been initialized! Please don't initialize it again!",
+            "Failed to initialize Giuroll",
+        );
+        return false;
+    }
     match truer_exec(filepath, pretend_to_be_vanilla) {
-        Ok(_) => true,
+        Ok(_) => {
+            *lock = true;
+            true
+        }
         Err(e) => {
-            warning_box(
-                format!("Failed to parse ini: {}", e).as_str(),
-                "Failed to load Giuroll",
-            );
+            warning_box(format!("{}", e).as_str(), "Failed to initialize Giuroll");
             false
         }
     }
@@ -352,6 +363,7 @@ struct FakeBattleManagerForTsk {
 }
 // SWRS_ADDR_PBATTLEMGR = 0x0047579c
 const P_FAKE_BATTLE_MANAGER_FOR_TSK: *mut *mut FakeBattleManagerForTsk = 0x47579c as _;
+const P_VER_BYTE: *mut u8 = 0x475798 as _;
 static mut FAKE_BATTLE_MANAGER_FOR_TSK: Option<Box<FakeBattleManagerForTsk>> = None;
 
 impl FakeBattleManagerForTsk {
@@ -559,7 +571,7 @@ static mut SMOOTH: bool = false;
 static mut LAST_SMOOTHED_FRAMECOUNT: usize = 0;
 
 //returns None on .ini errors
-fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), ParseFileError> {
+fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), String> {
     panic::update_hook(|prev, info| {
         warning_box(
             format!(
@@ -591,11 +603,38 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Pars
         AllocConsole();
     }
 
+    unsafe {
+        if *(0x8A0040 as *const usize) >= 5 || *(0x8A0044 as *const usize) >= 5 {
+            return Err("Please don't load Giuroll in battle".to_string());
+        }
+
+        let netcode_mod = match *(0x858b80 as *const u8) {
+            0x69 | 0x6a => Some("Giuroll < 0.6"),
+            VERSION_BYTE_60 | VERSION_BYTE_62 => Some("Giuroll 0.6.x"),
+            0x64 => Some("SokuRoll"),
+            0x6e => None,
+            _ => match *P_VER_BYTE {
+                0xcc => None,
+                _ => Some("unknown netcode mod"),
+            },
+        };
+
+        if let Some(netcode_mod) = netcode_mod {
+            return Err(format!(
+                "Conflict! An other netcode mod ({}) had been loaded!",
+                netcode_mod
+            ));
+        }
+    }
+
     let mut filepath = filename;
     filepath.push("giuroll.ini");
     //println!("{:?}", filepath);
 
-    let conf = mininip::parse::parse_file(filepath)?;
+    let conf = match mininip::parse::parse_file(filepath) {
+        Ok(x) => x,
+        Err(e) => return Err(format!("Failed to parse ini: {}", e)),
+    };
 
     #[cfg(feature = "logtofile")]
     {
@@ -874,14 +913,13 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Pars
     }
 
     unsafe {
-        tamper_memory(
-            0x858b80 as *mut u8,
-            if F62_ENABLED {
-                VERSION_BYTE_62
-            } else {
-                VERSION_BYTE_60
-            },
-        );
+        let ver_byte = if F62_ENABLED {
+            VERSION_BYTE_62
+        } else {
+            VERSION_BYTE_60
+        };
+        tamper_memory(0x858b80 as *mut u8, ver_byte);
+        tamper_memory(P_VER_BYTE, ver_byte);
     }
 
     //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
