@@ -38,9 +38,11 @@ jobs:
           mkdir ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/giuroll-default.ini
-          cp LICENSE ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE.txt
+          cp LICENSE ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll.txt
           cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader.exe ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader_dll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
+          cp injector/LICENSE-giuroll_loader ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll_loader.txt
+          cp injector/LICENSE-giuroll_loader_dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll_loader_dll.txt
           cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           echo [InternetShortcut] > source-code-and-the-build.url
           # https://stackoverflow.com/a/70566764

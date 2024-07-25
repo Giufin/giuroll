@@ -1,7 +1,7 @@
 cargo-features = ["profile-rustflags"]
 [package]
 name = "giuroll"
-authors = ["Giufin (2023~2024)", "Hagb (2024)"]
+authors = ["Giufin (2023~2024)", "Hagb (Junyu Guo) <hagb@hagb.name> (2024)"]
 license = "MIT"
 version = "0.6.17-2-beta1-hagb"
 edition = "2021"
