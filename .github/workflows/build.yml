@@ -11,6 +11,8 @@ env:
   SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
   PACK_DIR: _pack
   PACK_NAME: giuroll
+  SWRSTOYS_DOC_ID: 18hjFMGgzZMuKhelwY2JbpiefJuEyQh899-Bl-edyzxk
+  LOADER_DOC_ID: 1V_5Gs1fH8kJiQcnrPkn-Tylp97Zqi6oTGuVBHssMWMU
 
 jobs:
   build:
@@ -27,27 +29,17 @@ jobs:
       - run: |
           cargo build --profile ${{env.PROFILE}} -Z build-std
       - run: |
-          cd injector
-          # Workaround for the FUCKING anti-virus software, many of which even detect an exe which does nothing
-          # but is just written in rust and compiled by nightly toolchain with `-Ctarget-feature=+crt-static`!
-          # Even compiled with stable toolchain, such an exe is detected as virus by some anti-virus software.
-          rustup +nightly-2022-04-22 target add i686-pc-windows-msvc
-          cargo +nightly-2022-04-22 build --profile ${{env.PROFILE}} --target i686-pc-windows-msvc
-          cd ..
-      - run: |
           mkdir ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/giuroll-default.ini
           cp LICENSE ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll.txt
-          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader.exe ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
-          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader_dll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
-          cp injector/LICENSE-giuroll_loader ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll_loader.txt
-          cp injector/LICENSE-giuroll_loader_dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/LICENSE-giuroll_loader_dll.txt
           cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
-          echo [InternetShortcut] > source-code-and-the-build.url
+          echo [InternetShortcut] > verifiable-source-code-and-build.url
           # https://stackoverflow.com/a/70566764
-          echo URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} >> source-code-and-the-build.url
-          cp source-code-and-the-build.url ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
+          echo URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} >> verifiable-source-code-and-build.url
+          cp verifiable-source-code-and-build.url ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
+          Invoke-WebRequest "https://docs.google.com/feeds/download/documents/export/Export?id=${{ env.SWRSTOYS_DOC_ID }}&exportFormat=html" `
+            -OutFile ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/Installation-and-Usages.html
           cargo run --example print-mod-json --profile ${{env.PROFILE}} -Z build-std > ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/mod.json
           $verstr = cargo run --example print-version --profile ${{env.PROFILE}} -Z build-std
           $commit_id = git rev-parse --short HEAD
@@ -60,6 +52,31 @@ jobs:
             ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
             ${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
             !${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
+      - run: |
+          cd injector
+          # Workaround for the FUCKING anti-virus software, many of which even detect an exe which does nothing
+          # but is just written in rust and compiled by nightly toolchain with `-Ctarget-feature=+crt-static`!
+          # Even compiled with stable toolchain, such an exe is detected as virus by some anti-virus software.
+          rustup +nightly-2022-04-22 target add i686-pc-windows-msvc
+          cargo +nightly-2022-04-22 build --profile ${{env.PROFILE}} --target i686-pc-windows-msvc
+          cd ..
+          mkdir ${{ env.PACK_DIR }}/loader/
+          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader.exe ${{ env.PACK_DIR }}/loader/
+          cp injector/target/i686-pc-windows-msvc/${{ env.PROFILE }}/giuroll_loader_dll.dll ${{ env.PACK_DIR }}/loader/
+          cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll ${{ env.PACK_DIR }}/loader/
+          cp giuroll.ini ${{ env.PACK_DIR }}/loader/
+          cp giuroll.ini ${{ env.PACK_DIR }}/loader/giuroll-default.ini
+          cp LICENSE ${{ env.PACK_DIR }}/loader/LICENSE-giuroll.txt
+          cp verifiable-source-code-and-build.url ${{ env.PACK_DIR }}/loader/
+          Invoke-WebRequest "https://docs.google.com/feeds/download/documents/export/Export?id=${{ env.LOADER_DOC_ID }}&exportFormat=html" `
+            -OutFile ${{ env.PACK_DIR }}/loader/Installation-and-Usages.html
+          cp injector/LICENSE-giuroll_loader ${{ env.PACK_DIR }}/loader//LICENSE-giuroll_loader.txt
+          cp injector/LICENSE-giuroll_loader_dll ${{ env.PACK_DIR }}/loader//LICENSE-giuroll_loader_dll.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: giuroll-${{ env.VERSION }}_loaded-by-loader-exe
+          path: |
+            ${{ env.PACK_DIR }}/loader
       - uses: actions/upload-artifact@v4
         with:
           name: giuroll-pdb-${{ env.VERSION }}
