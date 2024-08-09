@@ -12,6 +12,9 @@ env:
   PACK_NAME: giuroll
   SWRSTOYS_DOC_ID: 18hjFMGgzZMuKhelwY2JbpiefJuEyQh899-Bl-edyzxk
   LOADER_DOC_ID: 1V_5Gs1fH8kJiQcnrPkn-Tylp97Zqi6oTGuVBHssMWMU
+  # Hardcode SOURCE_URL_BASE with "https://github.com/Hagb/giuroll-hagb" if you want to reproduce the build
+  # in https://github.com/Hagb/giuroll-hagb/actions bit-for-bit.
+  SOURCE_URL_BASE: ${{ github.server_url }}/${{ github.repository }}
 
 jobs:
   build:
@@ -26,6 +29,9 @@ jobs:
           toolchain: nightly-2024-04-15
           components: rust-src
       - run: |
+          $commit_id = git rev-parse --short HEAD
+          $Env:SOURCE_URL = "${{ env.SOURCE_URL_BASE }}/tree/${commit_id}"
+          echo SOURCE_URL=$Env:SOURCE_URL >> $env:GITHUB_ENV
           cargo build --profile ${{env.PROFILE}} -Z build-std
       - run: |
           mkdir ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
@@ -39,11 +45,9 @@ jobs:
           cp verifiable-source-code-and-build.url ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           Invoke-WebRequest "https://docs.google.com/feeds/download/documents/export/Export?id=${{ env.SWRSTOYS_DOC_ID }}&exportFormat=html" `
             -OutFile ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/Installation-and-Usages.html
-          $commit_id = git rev-parse --short HEAD
-          $Env:SOURCE_URL = "${{ github.server_url }}/${{ github.repository }}/commit/${commit_id}"
-          echo SOURCE_URL=$Env:SOURCE_URL >> $env:GITHUB_ENV
           cargo run --example print-mod-json --profile ${{env.PROFILE}} -Z build-std > ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/mod.json
           $verstr = cargo run --example print-version --profile ${{env.PROFILE}} -Z build-std
+          $commit_id = git rev-parse --short HEAD
           echo VERSION=${verstr}_${commit_id} >> $env:GITHUB_ENV
           echo "A workround to avoid the zip pack being flattened" > ${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
       - uses: actions/upload-artifact@v4
