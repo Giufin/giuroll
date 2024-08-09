@@ -4,7 +4,7 @@ on: workflow_dispatch
 env:
   CARGO_BUILD_TARGET: i686-win7-windows-msvc
   PROFILE: release
-  RUSTFLAGS: -Ctarget-feature=+crt-static
+  RUSTFLAGS: "-Clink-arg=/BREPRO -Ctarget-feature=+crt-static  -Zremap-cwd-prefix=. -Clink-arg=/PDBALTPATH:%_PDB%"
   CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
   CARGO_PROFILE_RELEASE_DEBUG: true
   CARGO_PROFILE_RELEASE_STRIP: none
