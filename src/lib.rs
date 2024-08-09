@@ -39,7 +39,6 @@ use ilhook::x86::{HookPoint, HookType};
 #[cfg(feature = "logtofile")]
 use log::info;
 use mininip::datas::{Identifier, Value};
-use mininip::errors::ParseFileError;
 use netcode::{Netcoder, NetworkPacket};
 
 //use notify::{RecursiveMode, Watcher};
@@ -233,16 +232,15 @@ pub unsafe extern "C" fn addRollbackCb(cb: *const Callbacks) {
 
 #[no_mangle]
 pub extern "C" fn InitializeByLoader(dllmodule: HMODULE) -> bool {
-    Initialize_(dllmodule, true)
+    initialize(dllmodule, true)
 }
 
 #[no_mangle]
 pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
-    Initialize_(dllmodule, false)
+    initialize(dllmodule, false)
 }
 
-#[no_mangle]
-fn Initialize_(dllmodule: HMODULE, pretend_to_be_vanilla: bool) -> bool {
+fn initialize(dllmodule: HMODULE, pretend_to_be_vanilla: bool) -> bool {
     let mut dat = [0u16; 1025];
     unsafe { GetModuleFileNameW(dllmodule, &mut dat) };
 
@@ -842,7 +840,7 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
     if f62_enabled {
         verstr += " CN";
     }
-    let mut title = read_ini_string(
+    let title = read_ini_string(
         &conf,
         "Misc",
         "game_title",

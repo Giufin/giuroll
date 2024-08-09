@@ -1,7 +1,7 @@
 use crate::{
-    change_delay_from_keys, draw_num, draw_num_x_center, get_num_length, pause, println, ptr_wrap,
-    read_current_input, read_key_better, resume,
-    rollback::{self, dump_frame, Frame, DUMP_FRAME_TIME},
+    draw_num_x_center, get_num_length, pause, println, ptr_wrap, read_current_input,
+    read_key_better, resume,
+    rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
     ENABLE_CHECK_MODE, F32, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH,
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
