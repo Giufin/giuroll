@@ -934,6 +934,42 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         }
     }
 
+    unsafe {
+        // ChainCFix, figured out by Dylan, Hagb and PinkySmile and originally implemented by PinkySmile.
+        // https://github.com/SokuDev/ChainCFix
+        unsafe extern "thiscall" fn my_object_handler_spawn_bullet(
+            player: usize,
+            action: i32,
+            x: f32,
+            y: f32,
+            dir: i32,
+            color: u32,
+            data: *mut f32,
+            size: usize,
+        ) {
+            let origin: unsafe extern "thiscall" fn(_, _, _, _, _, _, _, _) =
+                std::mem::transmute(0x46eb30);
+            // from SokuLib
+            let soku_operator_new: unsafe extern "cdecl" fn(usize) -> *mut u8 =
+                std::mem::transmute(0x0081FBDC);
+            let soku_operator_delete: unsafe extern "cdecl" fn(*mut u8) =
+                std::mem::transmute(0x0081F6FA);
+            let new_size = size + 1;
+            let new_data = soku_operator_new((new_size) * std::mem::size_of::<f32>()) as *mut f32;
+            new_data.copy_from(data, size);
+            *new_data.offset((new_size - 1) as isize) = 1.0;
+            origin(player, action, x, y, dir, color, new_data, new_size);
+            soku_operator_delete(new_data as _);
+        }
+        for a in [0x590486, 0x590C4C, 0x590683, 0x5906ED] as [usize; 4] {
+            tamper_jmp_relative_opr(
+                a as *mut c_void,
+                my_object_handler_spawn_bullet
+                    as unsafe extern "thiscall" fn(_, _, _, _, _, _, _, _),
+            );
+        }
+    }
+
     let new =
         unsafe { ilhook::x86::Hooker::new(0x482701, HookType::JmpBack(main_hook), 0).hook(6) };
     std::mem::forget(new);
