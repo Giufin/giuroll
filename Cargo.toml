@@ -53,7 +53,7 @@ strip = true
 OriginalFilename = "giuroll.dll"
 
 [build-dependencies]
-winres = "0.1"
+winres = { version = "0.1", path = "winres" }
 
 [dev-dependencies]
 serde_json = "1.0"

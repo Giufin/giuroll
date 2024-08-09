@@ -8,7 +8,6 @@ env:
   CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
   CARGO_PROFILE_RELEASE_DEBUG: true
   CARGO_PROFILE_RELEASE_STRIP: none
-  SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
   PACK_DIR: _pack
   PACK_NAME: giuroll
   SWRSTOYS_DOC_ID: 18hjFMGgzZMuKhelwY2JbpiefJuEyQh899-Bl-edyzxk
@@ -40,9 +39,11 @@ jobs:
           cp verifiable-source-code-and-build.url ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           Invoke-WebRequest "https://docs.google.com/feeds/download/documents/export/Export?id=${{ env.SWRSTOYS_DOC_ID }}&exportFormat=html" `
             -OutFile ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/Installation-and-Usages.html
+          $commit_id = git rev-parse --short HEAD
+          $Env:SOURCE_URL = "${{ github.server_url }}/${{ github.repository }}/commit/${commit_id}"
+          echo SOURCE_URL=$Env:SOURCE_URL >> $env:GITHUB_ENV
           cargo run --example print-mod-json --profile ${{env.PROFILE}} -Z build-std > ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/mod.json
           $verstr = cargo run --example print-version --profile ${{env.PROFILE}} -Z build-std
-          $commit_id = git rev-parse --short HEAD
           echo VERSION=${verstr}_${commit_id} >> $env:GITHUB_ENV
           echo "A workround to avoid the zip pack being flattened" > ${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
       - uses: actions/upload-artifact@v4
