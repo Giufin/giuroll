@@ -194,22 +194,18 @@ pub unsafe fn render_replay_progress_bar_and_numbers() {
     return;
 }
 
-pub unsafe extern "cdecl" fn is_replay_over(
-    a: *mut ilhook::x86::Registers,
-    _b: usize,
-    _c: usize,
-) -> usize {
+pub unsafe extern "fastcall" fn is_replay_over(this: usize) -> bool {
     // https://stackoverflow.com/a/46134764
-    let ori_fun: unsafe extern "fastcall" fn(u32) -> bool =
+    let ori_fun: unsafe extern "fastcall" fn(usize) -> bool =
         unsafe { std::mem::transmute(0x00480860) };
-    (*a).eax = (ori_fun((*a).ecx) && RE_PLAY.is_none() && CHECK.is_none()) as u32;
+    let ret = ori_fun(this) && RE_PLAY.is_none() && CHECK.is_none();
     // A workaround for removing the single (p1 only) extra input at the end of replays with KO
     // Check whether the deque saving inputs has only one element (size == 1):
     if *ptr_wrap!((*(0x0089881c as *const *const u32)).offset(0x4c / 4)) == 1 {
         // When the replay is over at this frame because of KO
         REPLAY_KO_FRAMECOUNT = Some(*SOKU_FRAMECOUNT);
     }
-    return 0x00482689 + 5;
+    return ret;
 }
 
 pub unsafe fn clean_replay_statics() {

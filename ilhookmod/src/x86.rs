@@ -60,6 +60,9 @@ pub type JmpToAddrRoutine =
 pub type JmpToRetRoutine =
     unsafe extern "cdecl" fn(regs: *mut Registers, ori_func_ptr: usize, src_addr: usize) -> usize;
 
+pub type JmpToRetEnumRoutine =
+    unsafe extern "cdecl" fn(regs: *mut Registers, ori_func_ptr: usize, src_addr: usize) -> usize;
+
 /// The hooking type.
 pub enum HookType {
     /// Used in a jmp-back hook
@@ -74,6 +77,8 @@ pub enum HookType {
 
     /// Used in a jmp-ret hook.
     JmpToRet(JmpToRetRoutine),
+
+    JmpToEnumRet(Vec<usize>, JmpToRetEnumRoutine),
 }
 
 /// The common registers.
@@ -470,6 +475,67 @@ fn generate_jmp_ret_stub<T: Write + Seek>(
     write_relative_off(buf, stub_base_addr, ori_addr + u32::from(ori_len))
 }
 
+extern "C" fn panic_c() {
+    panic!("Out of bounds of addresses array!");
+}
+
+fn generate_jmp_enum_ret_stub<T: Write + Seek>(
+    buf: &mut T,
+    stub_base_addr: u32,
+    _moving_code: &Vec<u8>,
+    _ori_addr: u32,
+    cb: JmpToRetRoutine,
+    _ori_len: u8,
+    user_data: usize,
+    rets: &[usize],
+) {
+    // push user_data
+    buf.write(&[0x68]).unwrap();
+    buf.write(&user_data.to_le_bytes()).unwrap();
+
+    // push XXXX (original function addr)
+    // push ebp (Registers)
+    // call XXXX (dest addr)
+    let ori_func_addr_off = buf.stream_position().unwrap() + 1;
+    buf.write(&[0x68, 0, 0, 0, 0, 0x55, 0xe8]).unwrap();
+    write_relative_off(buf, stub_base_addr, cb as u32);
+
+    // add esp, 0xc
+    buf.write(&[0x83, 0xc4, 0x0c]).unwrap();
+
+    // cmp eax, rets.len()
+    buf.write(&[0x3d]).unwrap();
+    buf.write(&rets.len().to_le_bytes()).unwrap();
+    // jb jump-to-address
+    buf.write(&[0x72, 0x05]).unwrap();
+    // jmp panic
+    buf.write(&[0xe9]).unwrap();
+    write_relative_off(buf, stub_base_addr, panic_c as extern "C" fn() as u32);
+    // :jump-to-address
+    // shl eax, 3
+    buf.write(&[0xc1, 0xe0, 0x03]).unwrap();
+    // add eax, a
+    buf.write(&[0x05]).unwrap();
+    let addr = stub_base_addr + buf.stream_position().unwrap() as u32 + 4 + 2;
+    buf.write(&addr.to_le_bytes()).unwrap();
+    // jmp eax
+    buf.write(&[0xff, 0xe0]).unwrap();
+    // :a
+    for dst_addr in rets {
+        // popfd
+        // popad
+        buf.write(&[0x9d, 0x61]).unwrap();
+        // jmp back
+        buf.write(&[0xe9]).unwrap();
+        write_relative_off(buf, stub_base_addr, *dst_addr as u32);
+        // nop
+        buf.write(&[0x90]).unwrap();
+    }
+
+    let ori_func_off = buf.stream_position().unwrap() as u32;
+    write_ori_func_addr(buf, ori_func_addr_off as u32, stub_base_addr + ori_func_off);
+}
+
 fn generate_stub(
     hooker: &Hooker,
     moving_code: Vec<u8>,
@@ -485,13 +551,13 @@ fn generate_stub(
     // mov ebp, esp
     buf.write(&[0x60, 0x9c, 0x8b, 0xec]).unwrap();
 
-    match hooker.hook_type {
+    match &hooker.hook_type {
         HookType::JmpBack(cb) => generate_jmp_back_stub(
             &mut buf,
             stub_addr,
             &moving_code,
             hooker.addr as u32,
-            cb,
+            *cb,
             ori_len,
             user_data,
         ),
@@ -500,8 +566,8 @@ fn generate_stub(
             stub_addr,
             &moving_code,
             hooker.addr as u32,
-            val as u16,
-            cb,
+            *val as u16,
+            *cb,
             ori_len,
             user_data,
         ),
@@ -510,20 +576,30 @@ fn generate_stub(
             stub_addr,
             &moving_code,
             hooker.addr as u32,
-            dest as u32,
-            cb,
+            *dest as u32,
+            *cb,
             ori_len,
             user_data,
-            popstack,
+            *popstack,
         ),
         HookType::JmpToRet(cb) => generate_jmp_ret_stub(
             &mut buf,
             stub_addr,
             &moving_code,
             hooker.addr as u32,
-            cb,
+            *cb,
             ori_len,
             user_data,
+        ),
+        HookType::JmpToEnumRet(addr, cb) => generate_jmp_enum_ret_stub(
+            &mut buf,
+            stub_addr,
+            &moving_code,
+            hooker.addr as u32,
+            *cb,
+            ori_len,
+            user_data,
+            addr.as_slice(),
         ),
     };
 
