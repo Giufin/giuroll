@@ -558,6 +558,7 @@ impl CameraTransform {
 }
 
 static mut CAMERA_ACTUAL_SMOOTH_TRANSFORM: Option<CameraTransform> = None;
+static mut LAST_IDEAL_CAMERA: Option<CameraTransform> = None;
 static mut LAST_CAMERA_BEFORE_SMOOTH: Option<CameraTransform> = None;
 static mut SMOOTH_ENABLED_CONFIG: bool = true;
 static mut SMOOTH_INCREASING_SCALE_CORRECTION: Option<f32> = None;
@@ -1140,6 +1141,7 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         MEMORY_LEAK = 0;
         LAST_M_LEN = 0;
         CAMERA_ACTUAL_SMOOTH_TRANSFORM = None;
+        LAST_IDEAL_CAMERA = None;
         LAST_CAMERA_BEFORE_SMOOTH = None;
         SMOOTH = false;
     }
@@ -1245,10 +1247,14 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         transform_smoothly(camera);
     }
 
-    unsafe fn render_battle(
-        cbattle_render: unsafe extern "thiscall" fn(usize) -> usize,
+    unsafe fn cbattle_process_smooth(
+        cbattle_process: unsafe extern "thiscall" fn(usize) -> usize,
         cbattle: usize,
     ) -> usize {
+        if let Some(last_ideal) = LAST_IDEAL_CAMERA.take() {
+            last_ideal.restore_all();
+        }
+        let ret = cbattle_process(cbattle);
         if SMOOTH {
             let ideal = CameraTransform::dump();
             if let Some(mut last_smoothed) = CAMERA_ACTUAL_SMOOTH_TRANSFORM.take() {
@@ -1334,47 +1340,46 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
             // dump smoothed camera
             CAMERA_ACTUAL_SMOOTH_TRANSFORM = Some(CameraTransform::dump());
             LAST_SMOOTHED_FRAMECOUNT = *SOKU_FRAMECOUNT;
-            let ret = cbattle_render(cbattle);
-            ideal.restore_all();
-            return ret;
-        } else {
-            return cbattle_render(cbattle);
+            assert!(LAST_IDEAL_CAMERA.is_none());
+            LAST_IDEAL_CAMERA = Some(ideal);
         }
+        return ret;
     }
     unsafe {
-        static mut CBATTLE_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        static mut CBATTLE_PROCESS: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
         unsafe extern "thiscall" fn cbattle_render(cbattle: usize) -> usize {
-            render_battle(CBATTLE_RENDER.unwrap(), cbattle)
+            cbattle_process_smooth(CBATTLE_PROCESS.unwrap(), cbattle)
         }
-        CBATTLE_RENDER = Some(tamper_memory(
-            0x008574a8 as _,
+        CBATTLE_PROCESS = Some(tamper_memory(
+            0x008574a4 as _,
             cbattle_render as unsafe extern "thiscall" fn(usize) -> usize,
         ));
 
-        static mut CBATTLECL_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        static mut CBATTLECL_PROCESS: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
         unsafe extern "thiscall" fn cbattlecl_render(cbattle: usize) -> usize {
-            render_battle(CBATTLECL_RENDER.unwrap(), cbattle)
+            cbattle_process_smooth(CBATTLECL_PROCESS.unwrap(), cbattle)
         }
-        CBATTLECL_RENDER = Some(tamper_memory(
-            0x00857578 as _,
+        CBATTLECL_PROCESS = Some(tamper_memory(
+            0x00857574 as _,
             cbattlecl_render as unsafe extern "thiscall" fn(usize) -> usize,
         ));
 
-        static mut CBATTLESV_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        static mut CBATTLESV_PROCESS: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
         unsafe extern "thiscall" fn cbattlesv_render(cbattle: usize) -> usize {
-            render_battle(CBATTLESV_RENDER.unwrap(), cbattle)
+            cbattle_process_smooth(CBATTLESV_PROCESS.unwrap(), cbattle)
         }
-        CBATTLESV_RENDER = Some(tamper_memory(
-            0x00857520 as _,
+        CBATTLESV_PROCESS = Some(tamper_memory(
+            0x0085751c as _,
             cbattlesv_render as unsafe extern "thiscall" fn(usize) -> usize,
         ));
 
-        static mut CBATTLE_WATCH_RENDER: Option<unsafe extern "thiscall" fn(usize) -> usize> = None;
+        static mut CBATTLE_WATCH_PROCESS: Option<unsafe extern "thiscall" fn(usize) -> usize> =
+            None;
         unsafe extern "thiscall" fn cbattle_watch_render(cbattle: usize) -> usize {
-            render_battle(CBATTLE_WATCH_RENDER.unwrap(), cbattle)
+            cbattle_process_smooth(CBATTLE_WATCH_PROCESS.unwrap(), cbattle)
         }
-        CBATTLE_WATCH_RENDER = Some(tamper_memory(
-            0x00857594 as _,
+        CBATTLE_WATCH_PROCESS = Some(tamper_memory(
+            0x00857590 as _,
             cbattle_watch_render as unsafe extern "thiscall" fn(usize) -> usize,
         ));
 
