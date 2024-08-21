@@ -292,6 +292,7 @@ static mut TARGET: Option<u128> = None;
 
 static mut WARNING_FRAME_MISSING_1_COUNTDOWN: usize = 0;
 static mut WARNING_FRAME_MISSING_2_COUNTDOWN: usize = 0;
+static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
 static SOKU_LOOP_EVENT: Mutex<Option<isize>> = Mutex::new(None);
 static TARGET_OFFSET: AtomicI32 = AtomicI32::new(0);
 //static TARGET_OFFSET_COUNT: AtomicI32 = AtomicI32::new(0);
@@ -1144,6 +1145,9 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         LAST_IDEAL_CAMERA = None;
         LAST_CAMERA_BEFORE_SMOOTH = None;
         SMOOTH = false;
+
+        WARNING_FRAME_MISSING_1_COUNTDOWN = 0;
+        WARNING_FRAME_MISSING_2_COUNTDOWN = 0;
     }
 
     //no_ko_sound
@@ -1391,13 +1395,11 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         }
     }
 
-    static mut WARNING_FRAME_LOST_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
     unsafe extern "cdecl" fn drawnumbers(_a: *mut ilhook::x86::Registers, _b: usize) {
         let d3d9_devic3 = 0x008A0E30 as *const *const IDirect3DDevice9;
         let yellow = D3DCOLOR_ARGB(0xff, 0xff, 0xff, 0);
         let red = D3DCOLOR_ARGB(0xff, 0xff, 0, 0);
 
-        WARNING_FRAME_MISSING_1_COUNTDOWN = WARNING_FRAME_MISSING_1_COUNTDOWN.saturating_sub(1);
         // (**d3d9_devic3).drawText
         if let Some(x) = NEXT_DRAW_PING {
             if WARNING_FRAME_MISSING_1_COUNTDOWN != 0
@@ -1415,7 +1417,6 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
             draw_num((300.0, 466.0), x);
         }
 
-        WARNING_FRAME_MISSING_2_COUNTDOWN = WARNING_FRAME_MISSING_2_COUNTDOWN.saturating_sub(1);
         if let Some(x) = NEXT_DRAW_ROLLBACK {
             if WARNING_FRAME_MISSING_2_COUNTDOWN != 0
                 && WARNING_WHEN_LAGGING
@@ -1441,7 +1442,6 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
         render_replay_progress_bar_and_numbers();
 
         if WARNING_FRAME_LOST_COUNTDOWN.load(Relaxed) != 0
-            && WARNING_FRAME_LOST_COUNTDOWN.fetch_sub(1, Relaxed) != 0
             && WARNING_WHEN_LAGGING
             && *(0x8998b2 as *const bool) /* whether display fps */
             && *SOKU_FRAMECOUNT >= 120
@@ -1880,7 +1880,7 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
                 *target = cur + (target_frametime) as u128;
             } else {
             }
-            WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
+            WARNING_FRAME_LOST_COUNTDOWN.store(115, Relaxed);
         } else {
             WaitForSingleObject(HANDLE(waithandle as isize), ddiff as u32);
             if SPIN_TIME_MICROSECOND != 0 {
@@ -1897,7 +1897,9 @@ fn truer_exec(filename: PathBuf, pretend_to_be_vanilla: bool) -> Result<(), Stri
                     && WaitForSingleObject(HANDLE(event), 0).0 == 0
                 {
                     println!("frame costed too much time!");
-                    WARNING_FRAME_LOST_COUNTDOWN.store(120, Relaxed);
+                    WARNING_FRAME_LOST_COUNTDOWN.store(115, Relaxed);
+                } else if WARNING_FRAME_LOST_COUNTDOWN.load(Relaxed) != 0 {
+                    WARNING_FRAME_LOST_COUNTDOWN.fetch_sub(1, Relaxed);
                 }
             }
         };
@@ -3008,6 +3010,11 @@ unsafe extern "cdecl" fn main_hook(a: *mut ilhook::x86::Registers, _b: usize) {
         }
     } else {
         //IS_KO = false;
+    }
+
+    if cur_speed_iter + 1 >= cur_speed {
+        WARNING_FRAME_MISSING_1_COUNTDOWN = WARNING_FRAME_MISSING_1_COUNTDOWN.saturating_sub(1);
+        WARNING_FRAME_MISSING_2_COUNTDOWN = WARNING_FRAME_MISSING_2_COUNTDOWN.saturating_sub(1);
     }
 
     let battle_manaer = (*a).esi as *const *const u8;
