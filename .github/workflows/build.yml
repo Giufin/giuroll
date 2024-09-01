@@ -15,12 +15,27 @@ env:
   # Hardcode SOURCE_URL_BASE with "https://github.com/Hagb/giuroll-hagb" if you want to reproduce the build
   # in https://github.com/Hagb/giuroll-hagb/actions bit-for-bit.
   SOURCE_URL_BASE: ${{ github.server_url }}/${{ github.repository }}
+  MSVC_MANIFEST: "https://download.visualstudio.microsoft.com/download/pr/11917f82-1030-4dda-a768-f0da3c4623a9/f3cb4f83005ad314ec45dac55db831a160d1af42c14db43e44eb7486d73212cf/VisualStudio.vsman"
+  VS_PATH: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
+  TOOLSET_VER: "14.40.33807"
 
 jobs:
   build:
     name: build
     runs-on: windows-2022
     steps:
+      - name: Install MSVC toolchain reproducibly
+        run: |
+          # A dirty workaround to avoid the linker from using newer libraries and break the reproducibility of builds.
+          mv "C:\\Program Files\\Microsoft Visual Studio\\" "C:\\Program Files\\Microsoft Visual Studio - bak"
+          git clone https://github.com/mstorsjo/msvc-wine.git
+          # This script is fast, and enough for us.
+          python ./msvc-wine/vsdownload.py --accept-license --skip-recommended --dest "${{ env.VS_PATH }}" `
+            --manifest ${{ env.MSVC_MANIFEST }} `
+            Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          $linker = "${{ env.VS_PATH }}\\VC\\Tools\\MSVC\\${{ env.TOOLSET_VER }}\\bin\\HostX64\\x86\\link.exe"
+          echo "CARGO_TARGET_I686_PC_WINDOWS_MSVC_LINKER=${linker}" >> $env:GITHUB_ENV
+          echo "CARGO_TARGET_I686_WIN7_WINDOWS_MSVC_LINKER=${linker}" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -28,12 +43,14 @@ jobs:
         with:
           toolchain: nightly-2024-04-15
           components: rust-src
-      - run: |
+      - name: Build giuroll.dll
+        run: |
           $commit_id = git rev-parse --short HEAD
           $Env:SOURCE_URL = "${{ env.SOURCE_URL_BASE }}/tree/${commit_id}"
           echo SOURCE_URL=$Env:SOURCE_URL >> $env:GITHUB_ENV
           cargo build --profile ${{env.PROFILE}} -Z build-std
-      - run: |
+      - name: Generate some other attachments to be included in packs
+        run: |
           mkdir ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp giuroll.ini ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/giuroll-default.ini
@@ -50,14 +67,16 @@ jobs:
           $commit_id = git rev-parse --short HEAD
           echo VERSION=${verstr}_${commit_id} >> $env:GITHUB_ENV
           echo "A workround to avoid the zip pack being flattened" > ${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
-      - uses: actions/upload-artifact@v4
+      - name: Upload giuroll
+        uses: actions/upload-artifact@v4
         with:
           name: giuroll-${{ env.VERSION }}
           path: |
             ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}
             ${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
             !${{ env.PACK_DIR }}/.a-workaround-to-avoid-being-flattened
-      - run: |
+      - name: Build the injector
+        run: |
           cd injector
           # Workaround for the FUCKING anti-virus software, many of which even detect an exe which does nothing
           # but is just written in rust and compiled by nightly toolchain with `-Ctarget-feature=+crt-static`!
@@ -77,23 +96,27 @@ jobs:
             -OutFile ${{ env.PACK_DIR }}/loader/Installation-and-Usages.html
           cp injector/LICENSE-giuroll_loader ${{ env.PACK_DIR }}/loader//LICENSE-giuroll_loader.txt
           cp injector/LICENSE-giuroll_loader_dll ${{ env.PACK_DIR }}/loader//LICENSE-giuroll_loader_dll.txt
-      - uses: actions/upload-artifact@v4
+      - name: Upload giuroll with injector
+        uses: actions/upload-artifact@v4
         with:
           name: giuroll-${{ env.VERSION }}_loaded-by-loader-exe
           path: |
             ${{ env.PACK_DIR }}/loader
-      - uses: actions/upload-artifact@v4
+      - name: Upload pdb file
+        uses: actions/upload-artifact@v4
         with:
           name: giuroll-pdb-${{ env.VERSION }}
           path: |
             target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb
             LICENSE
             source-code-and-the-build.url
-      - run: |
+      - name: Build giuroll with `fillfree` feature enabled
+        run: |
           cargo build --profile ${{env.PROFILE}} -Z build-std --features fillfree
           cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.dll ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
           cp target/${{ env.CARGO_BUILD_TARGET }}/${{ env.PROFILE }}/giuroll.pdb ${{ env.PACK_DIR }}/${{ env.PACK_NAME }}/
-      - uses: actions/upload-artifact@v4
+      - name: Upload giuroll with `fillfree` feature enabled
+        uses: actions/upload-artifact@v4
         with:
           name: giuroll-fillfree-${{ env.VERSION }}
           path: |
