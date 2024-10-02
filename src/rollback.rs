@@ -825,7 +825,7 @@ pub unsafe fn dump_frame(
     f
 }
 
-fn read_heap(pos: usize) -> usize {
+pub fn read_heap(pos: usize) -> usize {
     unsafe {
         windows::Win32::System::Memory::HeapSize(
             HANDLE(*(0x89b404 as *const isize)),

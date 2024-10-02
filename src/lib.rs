@@ -1625,14 +1625,37 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 
 // static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
+static mut FILL_FREE: bool = false;
+#[cfg(feature = "randomfillfree")]
+static mut HEAP_FREE_RNG: Option<rand::rngs::ThreadRng> = None;
+
 #[macro_export]
 macro_rules! soku_heap_free {
     ($ptr:expr) => {{
+        use crate::FILL_FREE;
         use windows::Win32::{
             Foundation::HANDLE,
             System::Memory::{HeapFree, HEAP_FLAGS},
         };
         let a: usize = $ptr;
+        if FILL_FREE {
+            use crate::rollback::read_heap;
+            let size = read_heap(a);
+            let a = std::slice::from_raw_parts_mut(a as *mut u8, size);
+            #[cfg(not(feature = "randomfillfree"))]
+            {
+                a.fill(0xff);
+            }
+            #[cfg(feature = "randomfillfree")]
+            {
+                use crate::HEAP_FREE_RNG;
+                use rand::{thread_rng, Rng};
+                if HEAP_FREE_RNG.is_none() {
+                    HEAP_FREE_RNG = Some(thread_rng());
+                }
+                HEAP_FREE_RNG.as_mut().unwrap().fill(a);
+            }
+        }
         HeapFree(
             HANDLE(*(0x89b404 as *const isize)),
             HEAP_FLAGS(0),
