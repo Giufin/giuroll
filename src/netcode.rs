@@ -8,7 +8,7 @@ use std::{
 use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
 
 use crate::{
-    input_to_accum, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED, SOKU_FRAMECOUNT,
+    input_to_accum, println, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED, SOKU_FRAMECOUNT,
     TARGET_OFFSET,
 };
 
