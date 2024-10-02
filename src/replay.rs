@@ -3,9 +3,10 @@ use crate::{
     read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
-    ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, MEMORY_RECEIVER_ALLOC,
-    MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH,
-    PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
+    ENABLE_CHECK_MODE, F32, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH,
+    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
+    OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
+    TAKEOVER_COLOR,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -295,17 +296,6 @@ enum CheckStep {
     TestPlay2,
     TestRollback(u32, u32, bool),
 }
-#[derive(Debug)]
-struct F32 {
-    f: f32,
-}
-
-impl PartialEq for F32 {
-    fn eq(&self, other: &Self) -> bool {
-        return self.f.to_ne_bytes() == other.f.to_ne_bytes();
-    }
-}
-impl Eq for F32 {}
 
 #[derive(Eq, PartialEq, Debug)]
 struct PlayerData {
