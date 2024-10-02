@@ -3,10 +3,9 @@ use crate::{
     read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
-    ENABLE_CHECK_MODE, FILL_FREE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH,
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
-    OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
-    TAKEOVER_COLOR,
+    ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, MEMORY_RECEIVER_ALLOC,
+    MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH,
+    PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -228,7 +227,6 @@ pub unsafe fn clean_replay_statics() {
         set_keys_availability_in_takeover(true);
     }
     NEXT_DRAW_ROLLBACK = None;
-    FILL_FREE = false;
 }
 
 unsafe fn set_keys_availability_in_takeover(enable: bool) {
@@ -406,7 +404,6 @@ pub unsafe fn handle_replay(
                 is_failed: false,
             });
             PAUSESTATE.store(0, Relaxed);
-            FILL_FREE = true;
         } else if let Some(max_rb) = (1..=13).find_map(|x| read_key_better(x + 1).then_some(x)) {
             PAUSESTATE.store(0, Relaxed);
             NEXT_DRAW_ROLLBACK = Some(max_rb as i32);
