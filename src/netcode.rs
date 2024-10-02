@@ -1,16 +1,15 @@
 #[cfg(feature = "logtofile")]
 use log::info;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::atomic::Ordering::Relaxed,
     time::{Duration, Instant},
 };
-use windows::Win32::Networking::WinSock::{sendto, SOCKADDR, SOCKET};
+use windows::Win32::Networking::WinSock::{SOCKADDR, SOCKET};
 
 use crate::{
-    input_to_accum, println, ptr_wrap, read_key_better, rollback::Rollbacker, LIKELY_DESYNCED,
-    SOKU_FRAMECOUNT, TARGET_OFFSET, WARNING_FRAME_MISSING_1_COUNTDOWN,
-    WARNING_FRAME_MISSING_2_COUNTDOWN,
+    input_to_accum, println, ptr_wrap, rollback::Rollbacker, LIKELY_DESYNCED, SOKU_FRAMECOUNT,
+    TARGET_OFFSET, WARNING_FRAME_MISSING_1_COUNTDOWN, WARNING_FRAME_MISSING_2_COUNTDOWN,
 };
 
 #[derive(Clone, Debug)]
@@ -691,7 +690,7 @@ pub unsafe fn send_packet(mut data: Box<[u8]>) {
     }
 }
 
-pub unsafe fn send_packet_untagged(mut data: Box<[u8]>) {
+pub unsafe fn send_packet_untagged(data: Box<[u8]>) {
     //info!("sending packet");
 
     let netmanager = *(0x8986a0 as *const usize);

@@ -2,10 +2,9 @@
 use log::info;
 use std::{
     arch::asm,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     ffi::c_void,
-    hash::RandomState,
-    iter::{empty, Empty},
+    iter::Empty,
     ops::Deref,
     ptr::null_mut,
     time::Duration,
@@ -13,8 +12,10 @@ use std::{
 
 use windows::Win32::Foundation::HANDLE;
 
+#[allow(unused_imports)]
+use crate::println;
 use crate::{
-    println, ptr_wrap, set_input_buffer, soku_heap_free, Callbacks, CALLBACK_ARRAY, ISDEBUG,
+    ptr_wrap, set_input_buffer, soku_heap_free, Callbacks, CALLBACK_ARRAY, ISDEBUG,
     MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, SOKU_FRAMECOUNT, SOUND_MANAGER,
 };
 
@@ -38,10 +39,10 @@ pub unsafe extern "cdecl" fn set_char_data_pos(pos: usize, a: usize, b: usize) {
     CHARSIZEDATA[pos] = (a, b);
 }
 
-pub enum MemoryManip {
-    Alloc(usize),
-    Free(usize),
-}
+// pub enum MemoryManip {
+//     Alloc(usize),
+//     Free(usize),
+// }
 pub struct EnemyInputHolder {
     pub i: Vec<Option<RInput>>,
 }
@@ -102,7 +103,7 @@ pub struct Rollbacker {
     current: usize,
     rolling_back: bool,
 
-    pub future_sound: HashMap<usize, usize>,
+    // pub future_sound: HashMap<usize, usize>,
     // first element is the sound, second is the frame it occured at, whenever a frame comes true we can delete all future sounds with that value
 
     // stores all the sounds that happened in "guessed" frames. Will also need to be topped up *after* last frame.
@@ -125,7 +126,7 @@ impl Rollbacker {
             enemy_inputs: EnemyInputHolder::new(),
             self_inputs: Vec::new(),
             weathers: HashMap::new(),
-            future_sound: HashMap::new(),
+            // future_sound: HashMap::new(),
         }
     }
 
@@ -240,10 +241,11 @@ impl Rollbacker {
             let fr = &mut fr_[0];
             if self.rolling_back {
                 unsafe {
-                    let frame = dump_frame(None::<Empty<_>>, None::<Empty<_>>);
+                    fr.prev_state = dump_frame(None::<Empty<_>>, None::<Empty<_>>);
                     #[cfg(feature = "logrollback")]
-                    println!("dump {}", frame.number);
-                    let mut prev = std::mem::replace(&mut fr.prev_state, frame);
+                    println!("dump {}", fr.prev_state.number);
+                    // the following have been done when `restore`:
+                    // let prev = std::mem::replace(&mut fr.prev_state, frame);
                     // prev.never_happened();
                     //let b = &mut *ALLOCMUTEX.lock().unwrap();
                     //for a in prev.allocs {
@@ -888,6 +890,7 @@ struct VecAddr {
 struct LL4 {
     pub pos: usize,
     pub next: usize,
+    #[allow(unused)]
     pub field2: usize,
     pub additional_data: usize,
 }
@@ -909,6 +912,7 @@ struct LL3Holder {
     pub pos: usize,
     pub ll4: usize,
     pub listcount: usize,
+    #[allow(unused)]
     pub add_data: usize,
 }
 
@@ -1189,6 +1193,7 @@ impl Frame {
         self.allocs.clear();
     }
 
+    #[allow(unused)]
     fn size_data(&self) -> String {
         let addr_total = self.addresses.iter().fold(0, |a, x| a + x.size);
         let freetotal = self.frees.len() * 4;
@@ -1196,6 +1201,7 @@ impl Frame {
         format!("addr: {addr_total} frees: {freetotal} allocs: {alloctotal}")
     }
 
+    #[allow(unused)]
     fn redundency_data(&self) -> String {
         let mut w = HashSet::new();
         let mut counter = 0;

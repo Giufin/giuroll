@@ -5,16 +5,20 @@
 #![feature(iter_from_coroutine)]
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(panic_update_hook)]
+// we should manually and carefully avoid undefined behavior about
+// references to and any borrowing of static mut variables.
+// shuold be solved before updating to 2024 edition?
+#![allow(static_mut_refs)]
 
 use std::panic;
 use std::{
     any::type_name,
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     ffi::{c_void, OsStr},
     mem::align_of,
     os::windows::prelude::OsStringExt,
     path::{Path, PathBuf},
-    ptr::{addr_of_mut, null, null_mut},
+    ptr::{addr_of_mut, null_mut},
     sync::{
         atomic::{AtomicI32, AtomicU32, Ordering::Relaxed},
         Mutex,
@@ -176,7 +180,8 @@ unsafe fn tamper_memory<T: Sized>(dst: *mut T, src: T) -> T {
         std::mem::size_of::<T>(),
         old_prot_ptr,
         std::ptr::addr_of_mut!(old_prot_ptr),
-    );
+    )
+    .unwrap();
     return ori;
 }
 
@@ -207,7 +212,8 @@ unsafe fn tamper_jmp_relative_opr<T: Sized>(dst: *mut c_void, src: T) -> T {
         std::mem::size_of::<usize>(),
         old_prot_ptr,
         std::ptr::addr_of_mut!(old_prot_ptr),
-    );
+    )
+    .unwrap();
     return ret;
 }
 
@@ -226,7 +232,7 @@ pub unsafe extern "C" fn better_exe_init_push_path(s: u8) {
 
 #[no_mangle]
 pub unsafe extern "C" fn better_exe_init() -> bool {
-    let os = OsStr::from_encoded_bytes_unchecked(&EXE_INIT_PATH);
+    let os = OsStr::from_encoded_bytes_unchecked(EXE_INIT_PATH.as_ref());
 
     truer_exec(PathBuf::from(os))
         .or_else(|| truer_exec(std::env::current_dir().unwrap()))
@@ -261,12 +267,11 @@ pub extern "C" fn Initialize(dllmodule: HMODULE) -> bool {
 // 85b8ec some related varible, 487040
 #[no_mangle]
 pub extern "cdecl" fn CheckVersion(a: *const [u8; 16]) -> bool {
-    // const HASH110A: [u8; 16] = [
-    //     0xdf, 0x35, 0xd1, 0xfb, 0xc7, 0xb5, 0x83, 0x31, 0x7a, 0xda, 0xbe, 0x8c, 0xd9, 0xf5, 0x3b,
-    //     0x2e,
-    // ];
-    // unsafe { *ptr_wrap!(a) == HASH110A }
-    return true;
+    const HASH110A: [u8; 16] = [
+        0xdf, 0x35, 0xd1, 0xfb, 0xc7, 0xb5, 0x83, 0x31, 0x7a, 0xda, 0xbe, 0x8c, 0xd9, 0xf5, 0x3b,
+        0x2e,
+    ];
+    unsafe { *ptr_wrap!(a) == HASH110A }
 }
 
 static mut REAL_INPUT: Option<[bool; 10]> = None;
@@ -416,6 +421,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
 
     #[cfg(feature = "allocconsole")]
     unsafe {
+        use windows::Win32::System::Console::AllocConsole;
         AllocConsole();
     }
 
@@ -590,6 +596,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
+    #[allow(unused_mut)]
     let mut verstr: String = if f62_enabled {
         format!("{}CN", VER)
     } else {
@@ -654,56 +661,30 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         FAKE_BATTLE_MANAGER_FOR_TSK = Some(FakeBattleManagerForTsk::new_box());
         tamper_memory(
             P_FAKE_BATTLE_MANAGER_FOR_TSK,
-            (FAKE_BATTLE_MANAGER_FOR_TSK.as_mut().unwrap().as_mut()
-                as *mut FakeBattleManagerForTsk),
+            FAKE_BATTLE_MANAGER_FOR_TSK.as_mut().unwrap().as_mut() as *mut FakeBattleManagerForTsk,
         );
     }
 
     unsafe {
-        let mut b = PAGE_PROTECTION_FLAGS(0);
-        VirtualProtect(
-            0x858b80 as *const c_void,
-            1,
-            PAGE_PROTECTION_FLAGS(0x40),
-            &mut b,
+        tamper_memory(
+            0x858b80 as *mut u8,
+            if F62_ENABLED {
+                VERSION_BYTE_62
+            } else {
+                VERSION_BYTE_60
+            },
         );
-
-        *(0x858b80 as *mut u8) = if F62_ENABLED {
-            VERSION_BYTE_62
-        } else {
-            VERSION_BYTE_60
-        };
     }
 
     //meiling d236 desync fix, original by PinkySmile, Slen, cc/delthas, Fear Nagae, PC_Volt
     unsafe {
-        let mut previous = PAGE_PROTECTION_FLAGS(0);
-        VirtualProtect(
-            0x724316 as *const c_void,
-            4,
-            PAGE_PROTECTION_FLAGS(0x40),
-            &mut previous,
-        );
-        *(0x724316 as *mut u8) = 0x66;
-        *(0x724317 as *mut u8) = 0xB9;
-        *(0x724318 as *mut u8) = 0x0F;
-        *(0x724319 as *mut u8) = 0x00;
-        VirtualProtect(0x724316 as *const c_void, 4, previous, &mut previous);
+        tamper_memory(0x724316 as *mut [u8; 4], [0x66, 0xB9, 0x0F, 0x00]);
     }
 
     // 9 digit font fix, by ichirin
     unsafe {
         for a in [0x43DC7D, 0x882954] {
-            let mut previous = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                a as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut previous,
-            );
-            *(a as *mut u8) = 0x0A;
-
-            VirtualProtect(a as *const c_void, 1, previous, &mut previous);
+            tamper_memory(a as *mut u8, 0x0A);
         }
     }
 
@@ -1281,7 +1262,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
             }
         }
     }
-    unsafe extern "cdecl" fn esc_host(a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn esc_host(_a: *mut ilhook::x86::Registers, _b: usize) {
         //println!("host has esced");
         send_packet_untagged(Box::new([0x6e, 0]))
     }
@@ -1321,7 +1302,7 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         }
     }
 
-    unsafe extern "cdecl" fn esc_client(a: *mut ilhook::x86::Registers, _b: usize) {
+    unsafe extern "cdecl" fn esc_client(_a: *mut ilhook::x86::Registers, _b: usize) {
         //println!("client has esced");
         send_packet_untagged(Box::new([0x6e, 0]))
     }
@@ -1524,34 +1505,12 @@ fn truer_exec(filename: PathBuf) -> Option<()> {
         };
     }
 
-    // disable x in replay 0x4826b5
-    if false {
-        unsafe {
-            let mut previous = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                0x4826b5 as *const c_void,
-                6,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut previous,
-            );
-            std::slice::from_raw_parts_mut(0x4826b5 as *mut u8, 6).copy_from_slice(&[0x90; 6])
-        };
-    }
-
     //*HOOK.lock().unwrap() = Some(hook.into_boxed_slice());
 
     unsafe {
         std::thread::spawn(|| {
             //wait to avoid being overwritten by th123e
             std::thread::sleep(Duration::from_millis(3000));
-
-            let mut whatever = PAGE_PROTECTION_FLAGS(0);
-            VirtualProtect(
-                0x89ffbe as *const c_void,
-                1,
-                PAGE_PROTECTION_FLAGS(0x40),
-                &mut whatever,
-            );
 
             windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
                 *(0x89ff90 as *const HWND),
@@ -1605,7 +1564,7 @@ static mut _NEXT_DRAW_PACKET_DESYNC: Option<i32> = None;
 const SOKU_FRAMECOUNT: *mut usize = 0x8985d8 as *mut usize;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 
-static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+// static FREEMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
 #[macro_export]
 macro_rules! soku_heap_free {
@@ -1672,7 +1631,7 @@ unsafe extern "stdcall" fn heap_free_override(heap: isize, flags: u32, s: *const
     //A_COUNT.store(A_COUNT.load(Relaxed) + 1, Relaxed);
 }
 
-static ALLOCMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+// static ALLOCMUTEX: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 //static MEMORYMUTEX: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 
 fn store_alloc(u: usize) {
@@ -1747,7 +1706,7 @@ unsafe extern "stdcall" fn heap_realloc_override(
 use core::sync::atomic::AtomicU8;
 
 use crate::{
-    netcode::{send_packet, send_packet_untagged},
+    netcode::send_packet_untagged,
     replay::{
         apause, clean_replay_statics, handle_replay, is_replay_over,
         render_replay_progress_bar_and_numbers,
@@ -1854,7 +1813,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
     };
     let type2 = slic[1];
 
-    let count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
+    // let count = usize::from_le_bytes(slic[2..6].try_into().unwrap());
     let sceneid = slic[6];
     //   let somethingweird = slic[7];
     //   let input1 = slic[8];
@@ -1965,7 +1924,7 @@ unsafe extern "cdecl" fn readonlinedata(a: *mut ilhook::x86::Registers, _b: usiz
                     .contains((0x008A0044 as *const usize).as_ref().unwrap())
                 && !is_p1()
             {
-                if (AFTER_GAME_REQUEST_FROM_P1) {
+                if AFTER_GAME_REQUEST_FROM_P1 {
                     println!("p2 get its fake packet [{},{}]", type1, type2);
                     AFTER_GAME_REQUEST_FROM_P1 = false;
                 } else {

@@ -235,7 +235,7 @@ pub fn modify_mem_protect(addr: usize, len: usize) -> u32 {
     let mut old_prot: u32 = 0;
     let old_prot_ptr = std::ptr::addr_of_mut!(old_prot);
     // PAGE_EXECUTE_READWRITE = 0x40
-    let ret = unsafe { VirtualProtect(addr as *const c_void, len, 0x40, old_prot_ptr) };
+    let _ret = unsafe { VirtualProtect(addr as *const c_void, len, 0x40, old_prot_ptr) };
 
     old_prot
 }

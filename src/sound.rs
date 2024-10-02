@@ -44,7 +44,7 @@ impl RollbackSoundManager {
         //println!("popping sounds from {from} to {to}");
 
         match std::mem::replace(&mut self.current_rollback, Some(from)) {
-            Some(x) => println!("should have crashed sound 45"),
+            Some(_) => println!("should have crashed sound 45"),
             None => (),
         };
 

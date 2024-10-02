@@ -3,24 +3,22 @@ use crate::{
     read_current_input, read_key_better, resume,
     rollback::{dump_frame, Frame, DUMP_FRAME_TIME},
     soku_heap_free, CENTER_X_P1, CENTER_X_P2, CENTER_Y_P1, CENTER_Y_P2, DISABLE_SOUND,
-    ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, ISDEBUG, LAST_STATE,
-    MEMORY_RECEIVER_ALLOC, MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR,
-    OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH, PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT,
-    TAKEOVER_COLOR,
+    ENABLE_CHECK_MODE, INSIDE_COLOR, INSIDE_HALF_HEIGHT, INSIDE_HALF_WIDTH, MEMORY_RECEIVER_ALLOC,
+    MEMORY_RECEIVER_FREE, NEXT_DRAW_ROLLBACK, OUTER_COLOR, OUTER_HALF_HEIGHT, OUTER_HALF_WIDTH,
+    PROGRESS_COLOR, REAL_INPUT, REAL_INPUT2, SOKU_FRAMECOUNT, TAKEOVER_COLOR,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    error::Error,
     io::Write,
     iter::Empty,
     os::raw::c_void,
-    sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering::Relaxed},
+    sync::atomic::{AtomicU8, Ordering::Relaxed},
     time::Duration,
     u32,
 };
 use winapi::shared::{
     d3d9::IDirect3DDevice9,
-    d3d9types::{D3DCLEAR_TARGET, D3DCOLOR, D3DCOLOR_RGBA, D3DPT_TRIANGLEFAN, D3DRECT},
+    d3d9types::{D3DCLEAR_TARGET, D3DRECT},
 };
 use windows::Win32::System::Console::AllocConsole;
 
@@ -231,20 +229,6 @@ pub unsafe fn clean_replay_statics() {
     NEXT_DRAW_ROLLBACK = None;
 }
 
-pub unsafe extern "cdecl" fn disable_x_in_takeover(
-    a: *mut ilhook::x86::Registers,
-    _b: usize,
-    _c: usize,
-) -> usize {
-    let should_jump = (*a).ebp == *(((*a).eax + 0x44) as *const u32);
-
-    if RE_PLAY.is_some() || !should_jump {
-        0x4826bb
-    } else {
-        0x4825e5
-    }
-}
-
 unsafe fn set_keys_availability_in_takeover(enable: bool) {
     for n in 0..=1 {
         let input_manager = *((0x00898680 as *const *mut u32).offset(n));
@@ -410,7 +394,7 @@ pub unsafe fn handle_replay(
         LAST_TARGET = None;
         if ENABLE_CHECK_MODE && read_key_better(0x2E) {
             DUMP_FRAME_TIME = Some(Duration::ZERO);
-            AllocConsole();
+            let _ = AllocConsole();
             println!("Enter check mode.");
             println!("Start step 1: playing the replay normally.");
             DISABLE_SOUND = true;
@@ -516,7 +500,7 @@ pub unsafe fn handle_replay(
 
         let edown = read_key_if_no_test(scheme[2]);
         if edown {
-            if let Some(x) = &mut RE_PLAY {
+            if let Some(x) = RE_PLAY.as_mut() {
                 x.is_p2 = true;
                 override_target_frame = Some(x.frame as u32 - 1);
                 RE_PLAY_PAUSE = 40;
