@@ -842,6 +842,9 @@ pub unsafe fn dump_frame() -> Frame {
         m.push(x);
     }
 
+    // For F1, F5, F6 and F7
+    m.push(read_addr(*(0x008971c8 as *mut usize) + 4, 8));
+
     Frame {
         number: *SOKU_FRAMECOUNT,
         adresses: m.into_boxed_slice(),
